@@ -35,25 +35,29 @@ public sealed class SnapshotComparer
     {
         foreach (var file in files)
         {
-            var parent = Path.GetDirectoryName(file.RelativePath) ?? string.Empty;
             AddSize(root, file.Size, isSnapshot);
-
-            if (string.IsNullOrEmpty(parent))
-            {
-                continue;
-            }
-
-            var segments = parent.Split(
-                [Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar],
-                StringSplitOptions.RemoveEmptyEntries);
+            var relativePath = file.RelativePath;
             var path = string.Empty;
             var current = root;
+            var segmentStart = 0;
 
-            foreach (var segment in segments)
+            for (var indexInPath = 0; indexInPath < relativePath.Length; indexInPath++)
             {
+                if (!IsDirectorySeparator(relativePath[indexInPath]))
+                {
+                    continue;
+                }
+
+                if (indexInPath == segmentStart)
+                {
+                    segmentStart++;
+                    continue;
+                }
+
+                var segment = relativePath[segmentStart..indexInPath];
                 path = string.IsNullOrEmpty(path)
                     ? segment
-                    : Path.Combine(path, segment);
+                    : string.Concat(path, Path.DirectorySeparatorChar, segment);
 
                 if (!index.TryGetValue(path, out var child))
                 {
@@ -64,8 +68,14 @@ public sealed class SnapshotComparer
 
                 AddSize(child, file.Size, isSnapshot);
                 current = child;
+                segmentStart = indexInPath + 1;
             }
         }
+    }
+
+    private static bool IsDirectorySeparator(char value)
+    {
+        return value == Path.DirectorySeparatorChar || value == Path.AltDirectorySeparatorChar;
     }
 
     private static void AddSize(FolderDelta node, long size, bool isSnapshot)

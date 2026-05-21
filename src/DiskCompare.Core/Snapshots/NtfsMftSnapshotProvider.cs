@@ -322,6 +322,7 @@ internal sealed class NtfsMftSnapshotProvider
     {
         var files = new List<FileEntry>(entries.Count);
         var directoryPathCache = new Dictionary<long, string?> { [RootDirectoryRecordNumber] = string.Empty };
+        var visiting = new HashSet<long>();
 
         foreach (var entry in entries.Values)
         {
@@ -337,7 +338,8 @@ internal sealed class NtfsMftSnapshotProvider
                     continue;
                 }
 
-                var parentPath = ResolveDirectoryPath(name.ParentRecordNumber, entries, directoryPathCache, []);
+                visiting.Clear();
+                var parentPath = ResolveDirectoryPath(name.ParentRecordNumber, entries, directoryPathCache, visiting);
                 if (parentPath is null)
                 {
                     continue;
@@ -345,7 +347,7 @@ internal sealed class NtfsMftSnapshotProvider
 
                 var relativePath = string.IsNullOrEmpty(parentPath)
                     ? name.Name
-                    : Path.Combine(parentPath, name.Name);
+                    : string.Concat(parentPath, Path.DirectorySeparatorChar, name.Name);
 
                 files.Add(new FileEntry(relativePath, entry.Size, name.LastWriteTimeUtc));
             }
@@ -378,7 +380,7 @@ internal sealed class NtfsMftSnapshotProvider
             return null;
         }
 
-        var name = entry.GetVisibleNames().FirstOrDefault();
+        var name = entry.GetPreferredVisibleName();
         if (name is null || name.Name == ".")
         {
             cache[recordNumber] = string.Empty;
@@ -389,7 +391,7 @@ internal sealed class NtfsMftSnapshotProvider
         var parentPath = ResolveDirectoryPath(name.ParentRecordNumber, entries, cache, visiting);
         var path = parentPath is null
             ? null
-            : string.IsNullOrEmpty(parentPath) ? name.Name : Path.Combine(parentPath, name.Name);
+            : string.IsNullOrEmpty(parentPath) ? name.Name : string.Concat(parentPath, Path.DirectorySeparatorChar, name.Name);
 
         cache[recordNumber] = path;
         visiting.Remove(recordNumber);
@@ -659,10 +661,50 @@ internal sealed class NtfsMftSnapshotProvider
 
         public IEnumerable<NtfsFileName> GetVisibleNames()
         {
-            return Names
-                .Where(static name => name.NamespaceId != 2 && name.Name is not "." and not "..")
-                .OrderBy(static name => name.NamespaceId == 1 ? 0 : 1)
-                .ThenBy(static name => name.Name, StringComparer.OrdinalIgnoreCase);
+            foreach (var name in Names)
+            {
+                if (IsPreferredVisibleName(name))
+                {
+                    yield return name;
+                }
+            }
+
+            foreach (var name in Names)
+            {
+                if (IsSecondaryVisibleName(name))
+                {
+                    yield return name;
+                }
+            }
+        }
+
+        public NtfsFileName? GetPreferredVisibleName()
+        {
+            NtfsFileName? fallback = null;
+            foreach (var name in Names)
+            {
+                if (IsPreferredVisibleName(name))
+                {
+                    return name;
+                }
+
+                if (fallback is null && IsSecondaryVisibleName(name))
+                {
+                    fallback = name;
+                }
+            }
+
+            return fallback;
+        }
+
+        private static bool IsPreferredVisibleName(NtfsFileName name)
+        {
+            return name.NamespaceId == 1 && name.Name is not "." and not "..";
+        }
+
+        private static bool IsSecondaryVisibleName(NtfsFileName name)
+        {
+            return name.NamespaceId is not 1 and not 2 && name.Name is not "." and not "..";
         }
     }
 
