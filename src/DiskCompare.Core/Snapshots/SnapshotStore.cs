@@ -34,16 +34,14 @@ public sealed class SnapshotStore
         var safePath = ValidateSnapshotOutputPath(filePath);
         EnsureSnapshotDirectoryExists();
 
-        await using var output = new FileStream(
-            safePath,
-            FileMode.CreateNew,
-            FileAccess.Write,
-            FileShare.None,
-            bufferSize: 128 * 1024,
-            useAsync: true);
-        await using var gzip = new GZipStream(output, CompressionLevel.Fastest);
-        await JsonSerializer.SerializeAsync(gzip, snapshot, JsonOptions, cancellationToken)
-            .ConfigureAwait(false);
+        await using (var output = CreateSnapshotFileStream(safePath))
+        {
+            await using var gzip = new GZipStream(output, CompressionLevel.Fastest);
+            await JsonSerializer.SerializeAsync(gzip, snapshot, JsonOptions, cancellationToken)
+                .ConfigureAwait(false);
+        }
+
+        EnsureFileIsNotReparsePoint(safePath);
     }
 
     public async Task<Snapshot> LoadAsync(
@@ -136,6 +134,24 @@ public sealed class SnapshotStore
         return fullPath;
     }
 
+    private FileStream CreateSnapshotFileStream(string safePath)
+    {
+        EnsureDirectoryIsNotReparsePoint(_snapshotDirectory);
+        var directory = Path.GetDirectoryName(safePath);
+        if (!string.Equals(NormalizeDirectory(directory), _snapshotDirectory, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException("Snapshot files can only be written to the DiskCompare snapshot directory.");
+        }
+
+        return new FileStream(
+            safePath,
+            FileMode.CreateNew,
+            FileAccess.Write,
+            FileShare.None,
+            bufferSize: 128 * 1024,
+            useAsync: true);
+    }
+
     private static void EnsureNoExistingAncestorIsReparsePoint(string directory)
     {
         var current = new DirectoryInfo(directory);
@@ -156,6 +172,15 @@ public sealed class SnapshotStore
         if (info.Exists && info.Attributes.HasFlag(FileAttributes.ReparsePoint))
         {
             throw new IOException($"Refusing to use a reparse point as the snapshot directory: {info.FullName}");
+        }
+    }
+
+    private static void EnsureFileIsNotReparsePoint(string filePath)
+    {
+        var attributes = File.GetAttributes(filePath);
+        if (attributes.HasFlag(FileAttributes.ReparsePoint))
+        {
+            throw new IOException($"Refusing to use a reparse point as the snapshot file: {filePath}");
         }
     }
 

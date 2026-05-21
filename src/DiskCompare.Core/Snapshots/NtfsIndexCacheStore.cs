@@ -65,14 +65,13 @@ internal sealed class NtfsIndexCacheStore
         EnsureCacheDirectoryExists();
 
         var cachePath = CreateUniqueCachePath(cache.DriveRoot, cache.VolumeSerialNumber, cache.NextUsn);
-        using var output = new FileStream(
-            cachePath,
-            FileMode.CreateNew,
-            FileAccess.Write,
-            FileShare.None,
-            bufferSize: 256 * 1024);
-        using var writer = new BinaryWriter(output);
-        WriteCache(writer, cache);
+        using (var output = CreateCacheFileStream(cachePath))
+        using (var writer = new BinaryWriter(output))
+        {
+            WriteCache(writer, cache);
+        }
+
+        EnsureFileIsNotReparsePoint(cachePath);
         PruneOldCaches(cache.DriveRoot, cache.VolumeSerialNumber);
     }
 
@@ -245,6 +244,23 @@ internal sealed class NtfsIndexCacheStore
         }
 
         throw new IOException("Could not create a unique NTFS index cache path.");
+    }
+
+    private FileStream CreateCacheFileStream(string safePath)
+    {
+        EnsureDirectoryIsNotReparsePoint(_cacheDirectory);
+        var directory = NormalizeDirectory(Path.GetDirectoryName(safePath));
+        if (!string.Equals(directory, _cacheDirectory, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new IOException("NTFS index cache path escaped the DiskCompare cache directory.");
+        }
+
+        return new FileStream(
+            safePath,
+            FileMode.CreateNew,
+            FileAccess.Write,
+            FileShare.None,
+            bufferSize: 256 * 1024);
     }
 
     private static string GetCacheFilePrefix(string driveRoot, uint volumeSerialNumber)
