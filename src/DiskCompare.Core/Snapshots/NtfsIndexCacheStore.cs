@@ -4,6 +4,10 @@ internal sealed class NtfsIndexCacheStore
 {
     private const string CacheExtension = ".ntfsindex";
     private const string CacheMagic = "DCNTFSIDX";
+    private const long MaxCacheFileBytes = 1024L * 1024 * 1024;
+    private const int MaxCacheRecords = 10_000_000;
+    private const int MaxNamesPerRecord = 8;
+    private const int MaxCachedStringLength = 32_767;
 
     private readonly string _cacheDirectory;
 
@@ -20,6 +24,11 @@ internal sealed class NtfsIndexCacheStore
             try
             {
                 EnsureFileIsNotReparsePoint(cachePath);
+                var info = new FileInfo(cachePath);
+                if (info.Length > MaxCacheFileBytes)
+                {
+                    continue;
+                }
 
                 using var input = new FileStream(
                     cachePath,
@@ -67,21 +76,21 @@ internal sealed class NtfsIndexCacheStore
 
     private static NtfsIndexCache ReadCache(BinaryReader reader)
     {
-        if (!string.Equals(reader.ReadString(), CacheMagic, StringComparison.Ordinal))
+        if (!string.Equals(ReadBoundedString(reader), CacheMagic, StringComparison.Ordinal))
         {
             throw new InvalidDataException("NTFS index cache header is invalid.");
         }
 
         var schemaVersion = reader.ReadInt32();
-        var driveRoot = reader.ReadString();
-        var fileSystem = reader.ReadString();
+        var driveRoot = ReadBoundedString(reader);
+        var fileSystem = ReadBoundedString(reader);
         var volumeSerialNumber = reader.ReadUInt32();
         var usnJournalId = reader.ReadUInt64();
         var nextUsn = reader.ReadInt64();
         var lowestValidUsn = reader.ReadInt64();
         var updatedAtUtc = new DateTime(reader.ReadInt64(), DateTimeKind.Utc);
         var recordCount = reader.ReadInt32();
-        if (recordCount < 0)
+        if (recordCount < 0 || recordCount > MaxCacheRecords)
         {
             throw new InvalidDataException("NTFS index cache record count is invalid.");
         }
@@ -94,7 +103,7 @@ internal sealed class NtfsIndexCacheStore
             var dataSize = reader.ReadInt64();
             var fileNameSize = reader.ReadInt64();
             var nameCount = reader.ReadInt32();
-            if (nameCount < 0)
+            if (nameCount < 0 || nameCount > MaxNamesPerRecord)
             {
                 throw new InvalidDataException("NTFS index cache name count is invalid.");
             }
@@ -104,7 +113,7 @@ internal sealed class NtfsIndexCacheStore
             {
                 names[nameIndex] = new NtfsCachedName(
                     reader.ReadInt64(),
-                    reader.ReadString(),
+                    ReadBoundedString(reader),
                     reader.ReadByte(),
                     (FileAttributes)reader.ReadInt32(),
                     new DateTime(reader.ReadInt64(), DateTimeKind.Utc),
@@ -124,6 +133,17 @@ internal sealed class NtfsIndexCacheStore
             lowestValidUsn,
             updatedAtUtc,
             records);
+    }
+
+    private static string ReadBoundedString(BinaryReader reader)
+    {
+        var value = reader.ReadString();
+        if (value.Length > MaxCachedStringLength)
+        {
+            throw new InvalidDataException("NTFS index cache string is too long.");
+        }
+
+        return value;
     }
 
     private static void WriteCache(BinaryWriter writer, NtfsIndexCache cache)

@@ -13,7 +13,8 @@ var tests = new (string Name, Action Run)[]
     ("Snapshot comparer handles mixed separators without parent split", SnapshotComparerHandlesMixedSeparators),
     ("Snapshot comparer uses folder aggregates when present", SnapshotComparerUsesFolderAggregatesWhenPresent),
     ("Snapshot comparer mixes legacy files and folder aggregates", SnapshotComparerMixesLegacyFilesAndFolderAggregates),
-    ("NTFS index cache stores unique files and loads newest USN", NtfsIndexCacheStoresUniqueFilesAndLoadsNewestUsn)
+    ("NTFS index cache stores unique files and loads newest USN", NtfsIndexCacheStoresUniqueFilesAndLoadsNewestUsn),
+    ("NTFS index cache ignores malicious counts", NtfsIndexCacheIgnoresMaliciousCounts)
 };
 
 foreach (var test in tests)
@@ -310,6 +311,37 @@ static void NtfsIndexCacheStoresUniqueFilesAndLoadsNewestUsn()
             ?? throw new InvalidOperationException("Expected cache to load.");
         AssertEqual(300L, loaded.NextUsn, "Newest cache USN");
         AssertEqual("sample.bin", loaded.Records[0].Names[0].Name, "Cache name");
+    }
+    finally
+    {
+        DeleteOwnedTempDirectory(tempRoot);
+    }
+}
+
+static void NtfsIndexCacheIgnoresMaliciousCounts()
+{
+    var tempRoot = CreateOwnedTempDirectory();
+
+    try
+    {
+        var path = Path.Combine(tempRoot, "T-1234ABCD-0000000000000001-malicious.ntfsindex");
+        using (var output = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+        using (var writer = new BinaryWriter(output))
+        {
+            writer.Write("DCNTFSIDX");
+            writer.Write(NtfsIndexCache.CurrentSchemaVersion);
+            writer.Write("T:\\");
+            writer.Write("NTFS");
+            writer.Write(0x1234ABCD);
+            writer.Write((ulong)99);
+            writer.Write(1L);
+            writer.Write(1L);
+            writer.Write(DateTime.UtcNow.Ticks);
+            writer.Write(int.MaxValue);
+        }
+
+        var loaded = new NtfsIndexCacheStore(tempRoot).TryLoad("T:\\", 0x1234ABCD);
+        AssertEqual<NtfsIndexCache?>(null, loaded, "Malicious cache ignored");
     }
     finally
     {
