@@ -95,7 +95,7 @@ internal sealed class NtfsMftSnapshotProvider
             SafeGet(() => drive.VolumeLabel),
             format,
             DateTime.UtcNow,
-            files.OrderBy(static file => file.RelativePath, StringComparer.OrdinalIgnoreCase).ToArray(),
+            files,
             []);
     }
 

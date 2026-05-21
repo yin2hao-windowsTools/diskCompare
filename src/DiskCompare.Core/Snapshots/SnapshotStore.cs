@@ -9,7 +9,7 @@ public sealed class SnapshotStore
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
-        WriteIndented = true,
+        WriteIndented = false,
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase
     };
 
@@ -35,7 +35,7 @@ public sealed class SnapshotStore
             FileShare.None,
             bufferSize: 128 * 1024,
             useAsync: true);
-        await using var gzip = new GZipStream(output, CompressionLevel.SmallestSize);
+        await using var gzip = new GZipStream(output, CompressionLevel.Fastest);
         await JsonSerializer.SerializeAsync(gzip, snapshot, JsonOptions, cancellationToken)
             .ConfigureAwait(false);
     }
