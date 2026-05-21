@@ -16,6 +16,7 @@ internal sealed class NtfsMftSnapshotProvider
     private const long FirstUserRecordNumber = 24;
     private const int ProgressRecordInterval = 65_536;
     private const int RecordsPerChunk = 8_192;
+    private const int UsnReadBufferSize = 8 * 1024 * 1024;
     private const ulong FileReferenceMask = 0x0000FFFFFFFFFFFF;
 
     public Snapshot? TryCreate(
@@ -76,8 +77,6 @@ internal sealed class NtfsMftSnapshotProvider
 
         using var stream = new FileStream(handle, FileAccess.Read, bufferSize: 1024 * 1024, isAsync: false);
         var boot = ReadBootSector(stream);
-        progress?.Report(new SnapshotProgress("正在读取 NTFS MFT 元数据...", 0, 0, 0, "NTFS MFT 快速索引"));
-
         var mftMap = ReadMftDataMap(stream, boot);
         var recordCount = mftMap.InitializedSize / boot.FileRecordSize;
         if (recordCount <= FirstUserRecordNumber)
@@ -85,8 +84,35 @@ internal sealed class NtfsMftSnapshotProvider
             throw new InvalidDataException("The NTFS MFT does not contain user records.");
         }
 
+        var volumeSerialNumber = TryGetVolumeSerialNumber(driveRoot);
+        var journal = TryQueryUsnJournal(handle);
+        if (volumeSerialNumber is not null && journal is not null)
+        {
+            var usnSnapshot = TryCreateFromUsnCache(
+                stream,
+                boot,
+                mftMap,
+                recordCount,
+                driveRoot,
+                format,
+                volumeSerialNumber.Value,
+                journal,
+                progress,
+                cancellationToken);
+
+            if (usnSnapshot is not null)
+            {
+                return usnSnapshot;
+            }
+        }
+
+        progress?.Report(new SnapshotProgress("正在读取 NTFS MFT 元数据...", 0, 0, 0, "NTFS MFT 快速索引"));
         var entries = ReadRecords(stream, boot, mftMap, recordCount, progress, cancellationToken);
         var files = BuildFileEntries(entries);
+        if (volumeSerialNumber is not null && journal is not null)
+        {
+            TrySaveCache(driveRoot, format, volumeSerialNumber.Value, journal, entries, progress);
+        }
 
         progress?.Report(new SnapshotProgress("NTFS MFT 快速索引完成", files.Count, files.Sum(static file => file.Size), 0, "NTFS MFT 快速索引"));
 
@@ -97,6 +123,73 @@ internal sealed class NtfsMftSnapshotProvider
             DateTime.UtcNow,
             files,
             []);
+    }
+
+    private static Snapshot? TryCreateFromUsnCache(
+        FileStream stream,
+        NtfsBootSector boot,
+        MftDataMap mftMap,
+        long recordCount,
+        string driveRoot,
+        string fileSystem,
+        uint volumeSerialNumber,
+        UsnJournalData journal,
+        IProgress<SnapshotProgress>? progress,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var cacheStore = new NtfsIndexCacheStore();
+            var cache = cacheStore.TryLoad(driveRoot, volumeSerialNumber);
+            if (cache is null || !IsUsnCacheUsable(cache, driveRoot, fileSystem, volumeSerialNumber, journal))
+            {
+                return null;
+            }
+
+            progress?.Report(new SnapshotProgress("正在读取 NTFS USN 增量日志...", 0, 0, 0, "NTFS USN 增量索引"));
+            var entries = ToEntries(cache);
+            var changedRecordNumbers = ReadChangedRecordNumbers(
+                stream.SafeFileHandle,
+                cache.NextUsn,
+                journal.NextUsn,
+                journal.UsnJournalId,
+                progress,
+                cancellationToken);
+
+            foreach (var changedRecordNumber in changedRecordNumbers)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var entry = TryReadRecord(stream, boot, mftMap, recordCount, changedRecordNumber);
+                if (entry is null)
+                {
+                    entries.Remove(changedRecordNumber);
+                    continue;
+                }
+
+                entries[changedRecordNumber] = entry;
+            }
+
+            var files = BuildFileEntries(entries);
+            TrySaveCache(driveRoot, fileSystem, volumeSerialNumber, journal, entries, progress);
+            progress?.Report(new SnapshotProgress("NTFS USN 增量索引完成", files.Count, files.Sum(static file => file.Size), 0, "NTFS USN 增量索引"));
+
+            return new Snapshot(
+                EnsureTrailingSeparator(driveRoot),
+                SafeGet(() => new DriveInfo(driveRoot).VolumeLabel),
+                fileSystem,
+                DateTime.UtcNow,
+                files,
+                []);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex) when (IsExpectedFastIndexFailure(ex))
+        {
+            progress?.Report(new SnapshotProgress($"NTFS USN 增量索引不可用，回退完整 MFT: {ex.Message}", 0, 0, 0, "NTFS MFT 快速索引"));
+            return null;
+        }
     }
 
     private static NtfsBootSector ReadBootSector(FileStream stream)
@@ -318,6 +411,47 @@ internal sealed class NtfsMftSnapshotProvider
         return entry.Names.Count == 0 ? null : entry;
     }
 
+    private static NtfsRecordEntry? TryReadRecord(
+        FileStream stream,
+        NtfsBootSector boot,
+        MftDataMap mftMap,
+        long recordCount,
+        long recordNumber)
+    {
+        if (recordNumber < 0 || recordNumber >= recordCount)
+        {
+            return null;
+        }
+
+        var remainingRecordOffset = recordNumber;
+        foreach (var run in mftMap.Runs)
+        {
+            var recordsInRun = (run.ClusterCount * boot.BytesPerCluster) / boot.FileRecordSize;
+            if (recordsInRun <= 0)
+            {
+                continue;
+            }
+
+            if (remainingRecordOffset >= recordsInRun)
+            {
+                remainingRecordOffset -= recordsInRun;
+                continue;
+            }
+
+            if (run.LogicalClusterNumber < 0)
+            {
+                return null;
+            }
+
+            var buffer = new byte[boot.FileRecordSize];
+            var diskOffset = (run.LogicalClusterNumber * boot.BytesPerCluster) + (remainingRecordOffset * boot.FileRecordSize);
+            ReadExactlyAt(stream, buffer, diskOffset);
+            return TryParseRecord(buffer, recordNumber, boot.BytesPerSector);
+        }
+
+        return null;
+    }
+
     private static List<FileEntry> BuildFileEntries(Dictionary<long, NtfsRecordEntry> entries)
     {
         var files = new List<FileEntry>(entries.Count);
@@ -354,6 +488,96 @@ internal sealed class NtfsMftSnapshotProvider
         }
 
         return files;
+    }
+
+    private static bool IsUsnCacheUsable(
+        NtfsIndexCache cache,
+        string driveRoot,
+        string fileSystem,
+        uint volumeSerialNumber,
+        UsnJournalData journal)
+    {
+        return cache.SchemaVersion == NtfsIndexCache.CurrentSchemaVersion
+            && string.Equals(EnsureTrailingSeparator(cache.DriveRoot), EnsureTrailingSeparator(driveRoot), StringComparison.OrdinalIgnoreCase)
+            && string.Equals(cache.FileSystem, fileSystem, StringComparison.OrdinalIgnoreCase)
+            && cache.VolumeSerialNumber == volumeSerialNumber
+            && cache.UsnJournalId == journal.UsnJournalId
+            && cache.NextUsn >= journal.LowestValidUsn
+            && cache.NextUsn <= journal.NextUsn;
+    }
+
+    private static Dictionary<long, NtfsRecordEntry> ToEntries(NtfsIndexCache cache)
+    {
+        var entries = new Dictionary<long, NtfsRecordEntry>(cache.Records.Length);
+        foreach (var cachedRecord in cache.Records)
+        {
+            var entry = new NtfsRecordEntry(cachedRecord.RecordNumber, cachedRecord.IsDirectory)
+            {
+                DataSize = cachedRecord.DataSize,
+                FileNameSize = cachedRecord.FileNameSize
+            };
+
+            foreach (var cachedName in cachedRecord.Names)
+            {
+                entry.Names.Add(new NtfsFileName(
+                    cachedName.ParentRecordNumber,
+                    cachedName.Name,
+                    cachedName.NamespaceId,
+                    cachedName.Attributes,
+                    cachedName.LastWriteTimeUtc,
+                    cachedName.RealSize));
+            }
+
+            entries[entry.RecordNumber] = entry;
+        }
+
+        return entries;
+    }
+
+    private static void TrySaveCache(
+        string driveRoot,
+        string fileSystem,
+        uint volumeSerialNumber,
+        UsnJournalData journal,
+        Dictionary<long, NtfsRecordEntry> entries,
+        IProgress<SnapshotProgress>? progress)
+    {
+        try
+        {
+            var records = new List<NtfsCachedRecord>(entries.Count);
+            foreach (var entry in entries.Values)
+            {
+                records.Add(new NtfsCachedRecord(
+                    entry.RecordNumber,
+                    entry.IsDirectory,
+                    entry.DataSize,
+                    entry.FileNameSize,
+                    entry.Names.Select(static name => new NtfsCachedName(
+                        name.ParentRecordNumber,
+                        name.Name,
+                        name.NamespaceId,
+                        name.Attributes,
+                        name.LastWriteTimeUtc,
+                        name.RealSize)).ToArray()));
+            }
+
+            var cache = new NtfsIndexCache(
+                NtfsIndexCache.CurrentSchemaVersion,
+                EnsureTrailingSeparator(driveRoot),
+                fileSystem,
+                volumeSerialNumber,
+                journal.UsnJournalId,
+                journal.NextUsn,
+                journal.LowestValidUsn,
+                DateTime.UtcNow,
+                records.ToArray());
+
+            new NtfsIndexCacheStore().Save(cache);
+        }
+        catch (Exception ex) when (IsExpectedFastIndexFailure(ex))
+        {
+            progress?.Report(new SnapshotProgress($"NTFS 索引缓存保存失败，已跳过: {ex.Message}", 0, 0, 0, "NTFS MFT 快速索引"));
+        }
     }
 
     private static string? ResolveDirectoryPath(
@@ -494,6 +718,126 @@ internal sealed class NtfsMftSnapshotProvider
         return true;
     }
 
+    private static UsnJournalData? TryQueryUsnJournal(SafeFileHandle handle)
+    {
+        try
+        {
+            Span<byte> output = stackalloc byte[80];
+            if (!NativeMethods.DeviceIoControl(
+                handle,
+                NativeMethods.FsctlQueryUsnJournal,
+                IntPtr.Zero,
+                0,
+                ref MemoryMarshal.GetReference(output),
+                output.Length,
+                out var bytesReturned,
+                IntPtr.Zero)
+                || bytesReturned < 32)
+            {
+                return null;
+            }
+
+            return new UsnJournalData(
+                BinaryPrimitives.ReadUInt64LittleEndian(output.Slice(0, 8)),
+                BinaryPrimitives.ReadInt64LittleEndian(output.Slice(8, 8)),
+                BinaryPrimitives.ReadInt64LittleEndian(output.Slice(16, 8)),
+                BinaryPrimitives.ReadInt64LittleEndian(output.Slice(24, 8)));
+        }
+        catch (Exception ex) when (IsExpectedFastIndexFailure(ex))
+        {
+            return null;
+        }
+    }
+
+    private static HashSet<long> ReadChangedRecordNumbers(
+        SafeFileHandle handle,
+        long startUsn,
+        long targetUsn,
+        ulong usnJournalId,
+        IProgress<SnapshotProgress>? progress,
+        CancellationToken cancellationToken)
+    {
+        var changedRecordNumbers = new HashSet<long>();
+        if (startUsn >= targetUsn)
+        {
+            return changedRecordNumbers;
+        }
+
+        var input = new ReadUsnJournalData(
+            startUsn,
+            NativeMethods.ReasonAll,
+            returnOnlyOnClose: 0,
+            timeout: 0,
+            bytesToWaitFor: 0,
+            usnJournalId);
+        var inputSize = Marshal.SizeOf<ReadUsnJournalData>();
+        var buffer = new byte[UsnReadBufferSize];
+
+        while (input.StartUsn < targetUsn)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var inputHandle = GCHandle.Alloc(input, GCHandleType.Pinned);
+            try
+            {
+                if (!NativeMethods.DeviceIoControl(
+                    handle,
+                    NativeMethods.FsctlReadUsnJournal,
+                    inputHandle.AddrOfPinnedObject(),
+                    inputSize,
+                    buffer,
+                    buffer.Length,
+                    out var bytesReturned,
+                    IntPtr.Zero))
+                {
+                    throw new Win32Exception(Marshal.GetLastWin32Error(), "Unable to read NTFS USN journal.");
+                }
+
+                if (bytesReturned <= sizeof(long))
+                {
+                    break;
+                }
+
+                input.StartUsn = BinaryPrimitives.ReadInt64LittleEndian(buffer.AsSpan(0, 8));
+                var offset = sizeof(long);
+                while (offset + 8 <= bytesReturned)
+                {
+                    var recordLength = BinaryPrimitives.ReadUInt32LittleEndian(buffer.AsSpan(offset, 4));
+                    if (recordLength < 60 || offset + recordLength > bytesReturned)
+                    {
+                        break;
+                    }
+
+                    var record = buffer.AsSpan(offset, (int)recordLength);
+                    AddChangedRecordNumbers(record, changedRecordNumbers);
+                    offset += (int)recordLength;
+                }
+
+                progress?.Report(new SnapshotProgress($"正在读取 NTFS USN 增量 {input.StartUsn:N0}/{targetUsn:N0}", changedRecordNumbers.Count, 0, 0, "NTFS USN 增量索引"));
+            }
+            finally
+            {
+                inputHandle.Free();
+            }
+        }
+
+        return changedRecordNumbers;
+    }
+
+    private static void AddChangedRecordNumbers(ReadOnlySpan<byte> usnRecord, HashSet<long> changedRecordNumbers)
+    {
+        var majorVersion = BinaryPrimitives.ReadUInt16LittleEndian(usnRecord.Slice(4, 2));
+        if (majorVersion == 2 && usnRecord.Length >= 60)
+        {
+            changedRecordNumbers.Add((long)(BinaryPrimitives.ReadUInt64LittleEndian(usnRecord.Slice(8, 8)) & FileReferenceMask));
+            changedRecordNumbers.Add((long)(BinaryPrimitives.ReadUInt64LittleEndian(usnRecord.Slice(16, 8)) & FileReferenceMask));
+        }
+        else if (majorVersion == 3 && usnRecord.Length >= 76)
+        {
+            changedRecordNumbers.Add((long)(BinaryPrimitives.ReadUInt64LittleEndian(usnRecord.Slice(8, 8)) & FileReferenceMask));
+            changedRecordNumbers.Add((long)(BinaryPrimitives.ReadUInt64LittleEndian(usnRecord.Slice(24, 8)) & FileReferenceMask));
+        }
+    }
+
     private static List<NtfsDataRun> ParseDataRuns(ReadOnlySpan<byte> runList)
     {
         var runs = new List<NtfsDataRun>();
@@ -605,6 +949,22 @@ internal sealed class NtfsMftSnapshotProvider
         }
     }
 
+    private static uint? TryGetVolumeSerialNumber(string driveRoot)
+    {
+        var root = EnsureTrailingSeparator(driveRoot);
+        return NativeMethods.GetVolumeInformation(
+            root,
+            null,
+            0,
+            out var serialNumber,
+            out _,
+            out _,
+            null,
+            0)
+            ? serialNumber
+            : null;
+    }
+
     private static DateTime SafeFileTime(long fileTime)
     {
         try
@@ -644,6 +1004,29 @@ internal sealed class NtfsMftSnapshotProvider
     private sealed record NtfsDataRun(
         long LogicalClusterNumber,
         long ClusterCount);
+
+    private sealed record UsnJournalData(
+        ulong UsnJournalId,
+        long FirstUsn,
+        long NextUsn,
+        long LowestValidUsn);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct ReadUsnJournalData(
+        long startUsn,
+        uint reasonMask,
+        uint returnOnlyOnClose,
+        ulong timeout,
+        ulong bytesToWaitFor,
+        ulong usnJournalId)
+    {
+        public long StartUsn = startUsn;
+        public uint ReasonMask = reasonMask;
+        public uint ReturnOnlyOnClose = returnOnlyOnClose;
+        public ulong Timeout = timeout;
+        public ulong BytesToWaitFor = bytesToWaitFor;
+        public ulong UsnJournalId = usnJournalId;
+    }
 
     private sealed class NtfsRecordEntry(long recordNumber, bool isDirectory)
     {
@@ -728,6 +1111,9 @@ internal sealed class NtfsMftSnapshotProvider
         public const uint OpenExisting = 3;
         public const uint FileAttributeNormal = 0x00000080;
         public const uint FileFlagSequentialScan = 0x08000000;
+        public const uint FsctlQueryUsnJournal = 0x000900F4;
+        public const uint FsctlReadUsnJournal = 0x000900BB;
+        public const uint ReasonAll = 0xFFFFFFFF;
 
         [DllImport("kernel32.dll", EntryPoint = "CreateFileW", SetLastError = true, CharSet = CharSet.Unicode)]
         public static extern SafeFileHandle CreateFile(
@@ -738,5 +1124,41 @@ internal sealed class NtfsMftSnapshotProvider
             uint creationDisposition,
             uint flagsAndAttributes,
             IntPtr templateFile);
+
+        [DllImport("kernel32.dll", EntryPoint = "DeviceIoControl", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        public static extern bool DeviceIoControl(
+            SafeFileHandle device,
+            uint ioControlCode,
+            IntPtr inBuffer,
+            int inBufferSize,
+            ref byte outBuffer,
+            int outBufferSize,
+            out int bytesReturned,
+            IntPtr overlapped);
+
+        [DllImport("kernel32.dll", EntryPoint = "DeviceIoControl", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        public static extern bool DeviceIoControl(
+            SafeFileHandle device,
+            uint ioControlCode,
+            IntPtr inBuffer,
+            int inBufferSize,
+            byte[] outBuffer,
+            int outBufferSize,
+            out int bytesReturned,
+            IntPtr overlapped);
+
+        [DllImport("kernel32.dll", EntryPoint = "GetVolumeInformationW", SetLastError = true, CharSet = CharSet.Unicode)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        public static extern bool GetVolumeInformation(
+            string rootPathName,
+            StringBuilder? volumeNameBuffer,
+            int volumeNameSize,
+            out uint volumeSerialNumber,
+            out uint maximumComponentLength,
+            out uint fileSystemFlags,
+            StringBuilder? fileSystemNameBuffer,
+            int fileSystemNameSize);
     }
 }

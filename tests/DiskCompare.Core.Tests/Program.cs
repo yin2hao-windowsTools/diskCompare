@@ -7,7 +7,9 @@ var tests = new (string Name, Action Run)[]
     ("Snapshot progress exposes scan mode", SnapshotProgressExposesScanMode),
     ("Snapshot store round trips compressed data", SnapshotStoreRoundTripsCompressedData),
     ("Snapshot store rejects unsafe output paths", SnapshotStoreRejectsUnsafeOutputPaths),
-    ("Snapshot store rejects unsafe input paths", SnapshotStoreRejectsUnsafeInputPaths)
+    ("Snapshot store rejects unsafe input paths", SnapshotStoreRejectsUnsafeInputPaths),
+    ("Snapshot comparer handles mixed separators without parent split", SnapshotComparerHandlesMixedSeparators),
+    ("NTFS index cache stores unique files and loads newest USN", NtfsIndexCacheStoresUniqueFilesAndLoadsNewestUsn)
 };
 
 foreach (var test in tests)
@@ -147,6 +149,82 @@ static void SnapshotStoreRejectsUnsafeInputPaths()
     {
         DeleteOwnedTempDirectory(tempRoot);
     }
+}
+
+static void SnapshotComparerHandlesMixedSeparators()
+{
+    var before = new Snapshot(
+        "T:\\",
+        "Test",
+        "NTFS",
+        DateTime.UtcNow,
+        [
+            new FileEntry("root.bin", 5, DateTime.UtcNow),
+            new FileEntry("A/B\\c.bin", 15, DateTime.UtcNow)
+        ],
+        []);
+    var now = new Snapshot(
+        "T:\\",
+        "Test",
+        "NTFS",
+        DateTime.UtcNow,
+        [new FileEntry("A/B\\c.bin", 25, DateTime.UtcNow)],
+        []);
+
+    var comparison = new SnapshotComparer().Compare(before, now);
+    AssertEqual(5, comparison.DeltaBytes, "Root mixed separator delta");
+    var a = Find(comparison.Root, "A");
+    AssertEqual(10, a.DeltaBytes, "A delta");
+    var b = Find(a, "B");
+    AssertEqual(10, b.DeltaBytes, "B delta");
+}
+
+static void NtfsIndexCacheStoresUniqueFilesAndLoadsNewestUsn()
+{
+    var tempRoot = CreateOwnedTempDirectory();
+
+    try
+    {
+        var store = new NtfsIndexCacheStore(tempRoot);
+        var older = CreateCache(nextUsn: 100);
+        var newer = CreateCache(nextUsn: 300);
+
+        store.Save(older);
+        store.Save(newer);
+
+        var files = Directory.EnumerateFiles(tempRoot, "*.ntfsindex").ToArray();
+        AssertEqual(2, files.Length, "Cache files are unique");
+
+        var loaded = store.TryLoad("T:\\", 0x1234ABCD)
+            ?? throw new InvalidOperationException("Expected cache to load.");
+        AssertEqual(300L, loaded.NextUsn, "Newest cache USN");
+        AssertEqual("sample.bin", loaded.Records[0].Names[0].Name, "Cache name");
+    }
+    finally
+    {
+        DeleteOwnedTempDirectory(tempRoot);
+    }
+}
+
+static NtfsIndexCache CreateCache(long nextUsn)
+{
+    return new NtfsIndexCache(
+        NtfsIndexCache.CurrentSchemaVersion,
+        "T:\\",
+        "NTFS",
+        0x1234ABCD,
+        99,
+        nextUsn,
+        1,
+        DateTime.UtcNow,
+        [
+            new NtfsCachedRecord(
+                42,
+                IsDirectory: false,
+                DataSize: 10,
+                FileNameSize: 10,
+                [new NtfsCachedName(5, "sample.bin", 1, FileAttributes.Archive, DateTime.UtcNow, 10)])
+        ]);
 }
 
 static FolderDelta Find(FolderDelta root, string name)
