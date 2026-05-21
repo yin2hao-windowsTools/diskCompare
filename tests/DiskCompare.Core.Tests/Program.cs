@@ -8,6 +8,8 @@ var tests = new (string Name, Action Run)[]
     ("Snapshot store round trips compressed data", SnapshotStoreRoundTripsCompressedData),
     ("Snapshot store rejects unsafe output paths", SnapshotStoreRejectsUnsafeOutputPaths),
     ("Snapshot store rejects unsafe input paths", SnapshotStoreRejectsUnsafeInputPaths),
+    ("Snapshot store rejects invalid loaded entries", SnapshotStoreRejectsInvalidLoadedEntries),
+    ("Snapshot store rejects oversized compressed files", SnapshotStoreRejectsOversizedCompressedFiles),
     ("Snapshot comparer handles mixed separators without parent split", SnapshotComparerHandlesMixedSeparators),
     ("Snapshot comparer uses folder aggregates when present", SnapshotComparerUsesFolderAggregatesWhenPresent),
     ("Snapshot comparer mixes legacy files and folder aggregates", SnapshotComparerMixesLegacyFilesAndFolderAggregates),
@@ -146,6 +148,55 @@ static void SnapshotStoreRejectsUnsafeInputPaths()
         AssertThrows<FileNotFoundException>(
             () => new SnapshotStore(tempRoot).LoadAsync(Path.Combine(tempRoot, "missing.dcsnap")).GetAwaiter().GetResult(),
             "Missing input file");
+    }
+    finally
+    {
+        DeleteOwnedTempDirectory(tempRoot);
+    }
+}
+
+static void SnapshotStoreRejectsInvalidLoadedEntries()
+{
+    var tempRoot = CreateOwnedTempDirectory();
+
+    try
+    {
+        var invalid = new Snapshot(
+            "T:\\",
+            "Test",
+            "NTFS",
+            DateTime.UtcNow,
+            [new FileEntry("C:\\absolute.bin", 1, DateTime.UtcNow)],
+            []);
+        var store = new SnapshotStore(tempRoot);
+        var path = store.CreateDefaultSnapshotPath(invalid);
+        store.SaveAsync(invalid, path).GetAwaiter().GetResult();
+
+        AssertThrows<InvalidDataException>(
+            () => store.LoadAsync(path).GetAwaiter().GetResult(),
+            "Invalid absolute file path");
+    }
+    finally
+    {
+        DeleteOwnedTempDirectory(tempRoot);
+    }
+}
+
+static void SnapshotStoreRejectsOversizedCompressedFiles()
+{
+    var tempRoot = CreateOwnedTempDirectory();
+
+    try
+    {
+        var path = Path.Combine(tempRoot, "oversized.dcsnap");
+        using (var file = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+        {
+            file.SetLength((256L * 1024 * 1024) + 1);
+        }
+
+        AssertThrows<InvalidDataException>(
+            () => new SnapshotStore(tempRoot).LoadAsync(path).GetAwaiter().GetResult(),
+            "Oversized compressed snapshot");
     }
     finally
     {

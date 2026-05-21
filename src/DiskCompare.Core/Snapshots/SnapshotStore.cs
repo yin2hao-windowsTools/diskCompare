@@ -6,11 +6,17 @@ namespace DiskCompare.Core.Snapshots;
 public sealed class SnapshotStore
 {
     public const string SnapshotExtension = ".dcsnap";
+    private const long MaxCompressedSnapshotBytes = 256L * 1024 * 1024;
+    private const long MaxDecompressedSnapshotBytes = 1024L * 1024 * 1024;
+    private const int MaxSnapshotFileEntries = 5_000_000;
+    private const int MaxSnapshotFolderEntries = 2_000_000;
+    private const int MaxSnapshotErrors = 250_000;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         WriteIndented = false,
-        PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        MaxDepth = 16
     };
 
     private readonly string _snapshotDirectory;
@@ -45,12 +51,25 @@ public sealed class SnapshotStore
         CancellationToken cancellationToken = default)
     {
         var safePath = ValidateSnapshotInputPath(filePath);
-        await using var input = File.OpenRead(safePath);
+        var info = new FileInfo(safePath);
+        if (info.Length > MaxCompressedSnapshotBytes)
+        {
+            throw new InvalidDataException($"Snapshot file is too large. Maximum allowed compressed size is {MaxCompressedSnapshotBytes:N0} bytes.");
+        }
+
+        await using var input = new FileStream(
+            safePath,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.Read,
+            bufferSize: 128 * 1024,
+            useAsync: true);
         await using var gzip = new GZipStream(input, CompressionMode.Decompress);
-        var snapshot = await JsonSerializer.DeserializeAsync<Snapshot>(gzip, JsonOptions, cancellationToken)
+        await using var limited = new LimitedReadStream(gzip, MaxDecompressedSnapshotBytes);
+        var snapshot = await JsonSerializer.DeserializeAsync<Snapshot>(limited, JsonOptions, cancellationToken)
             .ConfigureAwait(false);
 
-        return snapshot ?? throw new InvalidDataException("Snapshot file is empty or invalid.");
+        return ValidateLoadedSnapshot(snapshot);
     }
 
     public void EnsureSnapshotDirectoryExists()
@@ -161,6 +180,52 @@ public sealed class SnapshotStore
         return fullPath;
     }
 
+    private static Snapshot ValidateLoadedSnapshot(Snapshot? snapshot)
+    {
+        if (snapshot is null)
+        {
+            throw new InvalidDataException("Snapshot file is empty or invalid.");
+        }
+
+        if (string.IsNullOrWhiteSpace(snapshot.DriveRoot))
+        {
+            throw new InvalidDataException("Snapshot drive root is missing.");
+        }
+
+        if (snapshot.Files.Count > MaxSnapshotFileEntries)
+        {
+            throw new InvalidDataException($"Snapshot contains too many file entries. Maximum allowed count is {MaxSnapshotFileEntries:N0}.");
+        }
+
+        if (snapshot.FolderSizes.Count > MaxSnapshotFolderEntries)
+        {
+            throw new InvalidDataException($"Snapshot contains too many folder entries. Maximum allowed count is {MaxSnapshotFolderEntries:N0}.");
+        }
+
+        if (snapshot.Errors.Count > MaxSnapshotErrors)
+        {
+            throw new InvalidDataException($"Snapshot contains too many scan errors. Maximum allowed count is {MaxSnapshotErrors:N0}.");
+        }
+
+        foreach (var file in snapshot.Files)
+        {
+            if (string.IsNullOrWhiteSpace(file.RelativePath) || Path.IsPathRooted(file.RelativePath) || file.Size < 0)
+            {
+                throw new InvalidDataException("Snapshot contains an invalid file entry.");
+            }
+        }
+
+        foreach (var folder in snapshot.FolderSizes)
+        {
+            if (string.IsNullOrWhiteSpace(folder.RelativePath) || string.IsNullOrWhiteSpace(folder.Name) || Path.IsPathRooted(folder.RelativePath) || folder.Size < 0)
+            {
+                throw new InvalidDataException("Snapshot contains an invalid folder entry.");
+            }
+        }
+
+        return snapshot;
+    }
+
     private static string GetDefaultSnapshotDirectoryCore()
     {
         var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
@@ -176,5 +241,74 @@ public sealed class SnapshotStore
 
         var fullPath = Path.GetFullPath(path);
         return Path.TrimEndingDirectorySeparator(fullPath);
+    }
+
+    private sealed class LimitedReadStream(Stream inner, long maxBytes) : Stream
+    {
+        private long _bytesRead;
+
+        public override bool CanRead => true;
+
+        public override bool CanSeek => false;
+
+        public override bool CanWrite => false;
+
+        public override long Length => throw new NotSupportedException();
+
+        public override long Position
+        {
+            get => _bytesRead;
+            set => throw new NotSupportedException();
+        }
+
+        public override void Flush()
+        {
+            throw new NotSupportedException();
+        }
+
+        public override int Read(byte[] buffer, int offset, int count)
+        {
+            var read = inner.Read(buffer, offset, count);
+            AddBytes(read);
+            return read;
+        }
+
+        public override int Read(Span<byte> buffer)
+        {
+            var read = inner.Read(buffer);
+            AddBytes(read);
+            return read;
+        }
+
+        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            var read = await inner.ReadAsync(buffer, cancellationToken).ConfigureAwait(false);
+            AddBytes(read);
+            return read;
+        }
+
+        public override long Seek(long offset, SeekOrigin origin)
+        {
+            throw new NotSupportedException();
+        }
+
+        public override void SetLength(long value)
+        {
+            throw new NotSupportedException();
+        }
+
+        public override void Write(byte[] buffer, int offset, int count)
+        {
+            throw new NotSupportedException();
+        }
+
+        private void AddBytes(int read)
+        {
+            _bytesRead += read;
+            if (_bytesRead > maxBytes)
+            {
+                throw new InvalidDataException($"Snapshot expands beyond the allowed limit of {maxBytes:N0} bytes.");
+            }
+        }
     }
 }
