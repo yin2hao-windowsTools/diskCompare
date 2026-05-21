@@ -96,7 +96,25 @@ public sealed class SnapshotBuilder
     {
         try
         {
-            return Directory.EnumerateDirectories(path);
+            var directories = new List<string>();
+            foreach (var directory in new DirectoryInfo(path).EnumerateDirectories())
+            {
+                try
+                {
+                    if ((directory.Attributes & FileAttributes.ReparsePoint) == FileAttributes.ReparsePoint)
+                    {
+                        continue;
+                    }
+
+                    directories.Add(directory.FullName);
+                }
+                catch (Exception ex) when (IsRecoverable(ex))
+                {
+                    errors.Enqueue(new ScanError(directory.FullName, ex.Message));
+                }
+            }
+
+            return directories;
         }
         catch (Exception ex) when (IsRecoverable(ex))
         {
@@ -109,7 +127,10 @@ public sealed class SnapshotBuilder
     {
         try
         {
-            return Directory.EnumerateFiles(path);
+            return new DirectoryInfo(path)
+                .EnumerateFiles()
+                .Select(static file => file.FullName)
+                .ToArray();
         }
         catch (Exception ex) when (IsRecoverable(ex))
         {

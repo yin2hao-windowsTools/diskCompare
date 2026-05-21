@@ -1,12 +1,401 @@
-﻿<Window x:Class="DiskCompare.App.MainWindow"
+<Window x:Class="DiskCompare.App.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         xmlns:local="clr-namespace:DiskCompare.App"
         mc:Ignorable="d"
-        Title="MainWindow" Height="450" Width="800">
-    <Grid>
+        Title="DiskCompare"
+        Width="1220"
+        Height="760"
+        MinWidth="960"
+        MinHeight="620"
+        WindowStartupLocation="CenterScreen"
+        Background="#F5F7FA">
+    <Window.Resources>
+        <local:DeltaBrushConverter x:Key="DeltaBrushConverter" />
+        <local:DeltaTextConverter x:Key="DeltaTextConverter" />
+        <local:KindTextConverter x:Key="KindTextConverter" />
+        <local:RatioWidthConverter x:Key="RatioWidthConverter" />
+        <Style TargetType="Button">
+            <Setter Property="MinHeight" Value="34" />
+            <Setter Property="Padding" Value="12,6" />
+            <Setter Property="Cursor" Value="Hand" />
+        </Style>
+        <Style TargetType="ComboBox">
+            <Setter Property="MinHeight" Value="34" />
+        </Style>
+        <Style x:Key="MetricLabel" TargetType="TextBlock">
+            <Setter Property="Foreground" Value="#64748B" />
+            <Setter Property="FontSize" Value="12" />
+        </Style>
+        <Style x:Key="MetricValue" TargetType="TextBlock">
+            <Setter Property="Foreground" Value="#0F172A" />
+            <Setter Property="FontSize" Value="22" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+        </Style>
+    </Window.Resources>
 
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="64" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="34" />
+        </Grid.RowDefinitions>
+
+        <Border Grid.Row="0"
+                Background="#0F172A"
+                Padding="22,0">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <StackPanel VerticalAlignment="Center">
+                    <TextBlock Text="DiskCompare"
+                               Foreground="#FFFFFF"
+                               FontSize="22"
+                               FontWeight="SemiBold" />
+                    <TextBlock Text="磁盘快照与文件夹体积变化对比"
+                               Foreground="#CBD5E1"
+                               FontSize="12"
+                               Margin="0,2,0,0" />
+                </StackPanel>
+                <Button Grid.Column="1"
+                        Content="打开快照目录"
+                        Click="OpenSnapshotFolder_Click"
+                        VerticalAlignment="Center" />
+            </Grid>
+        </Border>
+
+        <Grid Grid.Row="1" Margin="18">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="310" />
+                <ColumnDefinition Width="16" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+
+            <Border Grid.Column="0"
+                    Background="#FFFFFF"
+                    BorderBrush="#D8DEE9"
+                    BorderThickness="1"
+                    CornerRadius="8"
+                    Padding="16">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+
+                    <StackPanel Grid.Row="0">
+                        <TextBlock Text="盘符"
+                                   FontSize="14"
+                                   FontWeight="SemiBold"
+                                   Foreground="#0F172A" />
+                        <Grid Margin="0,8,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="8" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <ComboBox x:Name="DriveComboBox"
+                                      DisplayMemberPath="DisplayName"
+                                      SelectedValuePath="RootPath"
+                                      SelectionChanged="DriveComboBox_SelectionChanged" />
+                            <Button Grid.Column="2"
+                                    Content="刷新"
+                                    Click="RefreshDrives_Click" />
+                        </Grid>
+                        <TextBlock x:Name="DriveInfoTextBlock"
+                                   Text="选择一个可用磁盘"
+                                   TextWrapping="Wrap"
+                                   Foreground="#64748B"
+                                   Margin="0,8,0,0" />
+                    </StackPanel>
+
+                    <StackPanel Grid.Row="1" Margin="0,22,0,0">
+                        <TextBlock Text="快照"
+                                   FontSize="14"
+                                   FontWeight="SemiBold"
+                                   Foreground="#0F172A" />
+                        <Button x:Name="CreateSnapshotButton"
+                                Content="创建当前盘快照"
+                                Click="CreateSnapshot_Click"
+                                Margin="0,8,0,0" />
+                        <Button x:Name="LoadSnapshotButton"
+                                Content="加载已有快照"
+                                Click="LoadSnapshot_Click"
+                                Margin="0,8,0,0" />
+                        <Button x:Name="CompareButton"
+                                Content="与当前磁盘对比"
+                                Click="CompareSnapshot_Click"
+                                Margin="0,8,0,0"
+                                IsEnabled="False" />
+                        <Button x:Name="CancelButton"
+                                Content="取消扫描"
+                                Click="Cancel_Click"
+                                Margin="0,8,0,0"
+                                IsEnabled="False" />
+                    </StackPanel>
+
+                    <StackPanel Grid.Row="2" Margin="0,22,0,0">
+                        <TextBlock Text="当前快照"
+                                   FontSize="14"
+                                   FontWeight="SemiBold"
+                                   Foreground="#0F172A" />
+                        <TextBlock x:Name="SnapshotInfoTextBlock"
+                                   Text="尚未加载快照"
+                                   TextWrapping="Wrap"
+                                   Foreground="#64748B"
+                                   Margin="0,8,0,0" />
+                    </StackPanel>
+
+                    <Border Grid.Row="3"
+                            Margin="0,22,0,0"
+                            Background="#F8FAFC"
+                            BorderBrush="#E2E8F0"
+                            BorderThickness="1"
+                            CornerRadius="8"
+                            Padding="12">
+                        <StackPanel>
+                            <TextBlock Text="扫描状态"
+                                       FontSize="14"
+                                       FontWeight="SemiBold"
+                                       Foreground="#0F172A" />
+                            <ProgressBar x:Name="ActivityProgressBar"
+                                         Height="8"
+                                         IsIndeterminate="False"
+                                         Margin="0,12,0,0" />
+                            <TextBlock x:Name="ProgressTextBlock"
+                                       Text="空闲"
+                                       TextWrapping="Wrap"
+                                       Foreground="#475569"
+                                       Margin="0,10,0,0" />
+                        </StackPanel>
+                    </Border>
+
+                    <TextBlock Grid.Row="4"
+                               Text="快照采用相对路径记录文件大小，遇到无权限目录会跳过并保留错误计数。"
+                               TextWrapping="Wrap"
+                               Foreground="#64748B"
+                               FontSize="12"
+                               Margin="0,18,0,0" />
+                </Grid>
+            </Border>
+
+            <Grid Grid.Column="2">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="16" />
+                    <RowDefinition Height="*" />
+                </Grid.RowDefinitions>
+
+                <UniformGrid Grid.Row="0"
+                             Columns="4"
+                             Rows="1">
+                    <Border Background="#FFFFFF"
+                            BorderBrush="#D8DEE9"
+                            BorderThickness="1"
+                            CornerRadius="8"
+                            Padding="14"
+                            Margin="0,0,10,0">
+                        <StackPanel>
+                            <TextBlock Text="快照大小" Style="{StaticResource MetricLabel}" />
+                            <TextBlock x:Name="SnapshotBytesTextBlock"
+                                       Text="-"
+                                       Style="{StaticResource MetricValue}" />
+                        </StackPanel>
+                    </Border>
+                    <Border Background="#FFFFFF"
+                            BorderBrush="#D8DEE9"
+                            BorderThickness="1"
+                            CornerRadius="8"
+                            Padding="14"
+                            Margin="0,0,10,0">
+                        <StackPanel>
+                            <TextBlock Text="当前大小" Style="{StaticResource MetricLabel}" />
+                            <TextBlock x:Name="CurrentBytesTextBlock"
+                                       Text="-"
+                                       Style="{StaticResource MetricValue}" />
+                        </StackPanel>
+                    </Border>
+                    <Border Background="#FFFFFF"
+                            BorderBrush="#D8DEE9"
+                            BorderThickness="1"
+                            CornerRadius="8"
+                            Padding="14"
+                            Margin="0,0,10,0">
+                        <StackPanel>
+                            <TextBlock Text="总变化" Style="{StaticResource MetricLabel}" />
+                            <TextBlock x:Name="DeltaBytesTextBlock"
+                                       Text="-"
+                                       Style="{StaticResource MetricValue}" />
+                        </StackPanel>
+                    </Border>
+                    <Border Background="#FFFFFF"
+                            BorderBrush="#D8DEE9"
+                            BorderThickness="1"
+                            CornerRadius="8"
+                            Padding="14">
+                        <StackPanel>
+                            <TextBlock Text="文件 / 错误" Style="{StaticResource MetricLabel}" />
+                            <TextBlock x:Name="FileAndErrorTextBlock"
+                                       Text="-"
+                                       Style="{StaticResource MetricValue}" />
+                        </StackPanel>
+                    </Border>
+                </UniformGrid>
+
+                <Grid Grid.Row="2">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="1.15*" />
+                        <ColumnDefinition Width="16" />
+                        <ColumnDefinition Width="0.85*" />
+                    </Grid.ColumnDefinitions>
+
+                    <Border Grid.Column="0"
+                            Background="#FFFFFF"
+                            BorderBrush="#D8DEE9"
+                            BorderThickness="1"
+                            CornerRadius="8"
+                            Padding="14">
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="*" />
+                            </Grid.RowDefinitions>
+                            <DockPanel Grid.Row="0" Margin="0,0,0,10">
+                                <TextBlock Text="文件夹变化树"
+                                           DockPanel.Dock="Left"
+                                           FontSize="15"
+                                           FontWeight="SemiBold"
+                                           Foreground="#0F172A" />
+                                <TextBlock x:Name="TreeHintTextBlock"
+                                           DockPanel.Dock="Right"
+                                           Text=""
+                                           Foreground="#64748B" />
+                            </DockPanel>
+                            <TreeView x:Name="DeltaTreeView"
+                                      Grid.Row="1"
+                                      BorderThickness="0"
+                                      ItemsSource="{Binding}">
+                                <TreeView.Resources>
+                                    <HierarchicalDataTemplate DataType="{x:Type local:FolderDeltaViewModel}"
+                                                              ItemsSource="{Binding Children}">
+                                        <Grid MinWidth="560" Margin="0,3">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="220" />
+                                                <ColumnDefinition Width="96" />
+                                                <ColumnDefinition Width="96" />
+                                                <ColumnDefinition Width="96" />
+                                                <ColumnDefinition Width="120" />
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Text="{Binding Name}"
+                                                       VerticalAlignment="Center"
+                                                       Foreground="#0F172A" />
+                                            <TextBlock Grid.Column="1"
+                                                       Text="{Binding SnapshotBytesText}"
+                                                       Foreground="#64748B"
+                                                       VerticalAlignment="Center" />
+                                            <TextBlock Grid.Column="2"
+                                                       Text="{Binding CurrentBytesText}"
+                                                       Foreground="#64748B"
+                                                       VerticalAlignment="Center" />
+                                            <TextBlock Grid.Column="3"
+                                                       Text="{Binding DeltaBytes, Converter={StaticResource DeltaTextConverter}}"
+                                                       Foreground="{Binding DeltaBytes, Converter={StaticResource DeltaBrushConverter}}"
+                                                       FontWeight="SemiBold"
+                                                       VerticalAlignment="Center" />
+                                            <Grid Grid.Column="4"
+                                                  Height="10"
+                                                  VerticalAlignment="Center"
+                                                  Background="#E2E8F0">
+                                                <Border Width="{Binding Ratio, Converter={StaticResource RatioWidthConverter}}"
+                                                        HorizontalAlignment="Left"
+                                                        Background="{Binding DeltaBytes, Converter={StaticResource DeltaBrushConverter}}" />
+                                            </Grid>
+                                        </Grid>
+                                    </HierarchicalDataTemplate>
+                                </TreeView.Resources>
+                            </TreeView>
+                        </Grid>
+                    </Border>
+
+                    <Border Grid.Column="2"
+                            Background="#FFFFFF"
+                            BorderBrush="#D8DEE9"
+                            BorderThickness="1"
+                            CornerRadius="8"
+                            Padding="14">
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="*" />
+                            </Grid.RowDefinitions>
+                            <TextBlock Text="最大变化"
+                                       FontSize="15"
+                                       FontWeight="SemiBold"
+                                       Foreground="#0F172A"
+                                       Margin="0,0,0,10" />
+                            <ListView x:Name="LargestChangesListView"
+                                      Grid.Row="1"
+                                      BorderThickness="0"
+                                      ItemsSource="{Binding}">
+                                <ListView.ItemTemplate>
+                                    <DataTemplate DataType="{x:Type local:FolderDeltaViewModel}">
+                                        <Grid Margin="0,4">
+                                            <Grid.RowDefinitions>
+                                                <RowDefinition Height="Auto" />
+                                                <RowDefinition Height="Auto" />
+                                            </Grid.RowDefinitions>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Text="{Binding Path}"
+                                                       Foreground="#0F172A"
+                                                       TextTrimming="CharacterEllipsis"
+                                                       VerticalAlignment="Center" />
+                                            <TextBlock Grid.Column="1"
+                                                       Text="{Binding DeltaBytes, Converter={StaticResource DeltaTextConverter}}"
+                                                       Foreground="{Binding DeltaBytes, Converter={StaticResource DeltaBrushConverter}}"
+                                                       FontWeight="SemiBold"
+                                                       Margin="10,0,0,0" />
+                                            <TextBlock Grid.Row="1"
+                                                       Text="{Binding Kind, Converter={StaticResource KindTextConverter}}"
+                                                       Foreground="#64748B"
+                                                       FontSize="12"
+                                                       Margin="0,2,0,0" />
+                                            <Grid Grid.Row="1"
+                                                  Grid.Column="1"
+                                                  Width="110"
+                                                  Height="8"
+                                                  Background="#E2E8F0"
+                                                  Margin="10,6,0,0">
+                                                <Border Width="{Binding Ratio, Converter={StaticResource RatioWidthConverter}}"
+                                                        HorizontalAlignment="Left"
+                                                        Background="{Binding DeltaBytes, Converter={StaticResource DeltaBrushConverter}}" />
+                                            </Grid>
+                                        </Grid>
+                                    </DataTemplate>
+                                </ListView.ItemTemplate>
+                            </ListView>
+                        </Grid>
+                    </Border>
+                </Grid>
+            </Grid>
+        </Grid>
+
+        <Border Grid.Row="2"
+                Background="#E2E8F0"
+                Padding="18,0">
+            <TextBlock x:Name="StatusTextBlock"
+                       Text="就绪"
+                       VerticalAlignment="Center"
+                       Foreground="#334155" />
+        </Border>
     </Grid>
 </Window>
