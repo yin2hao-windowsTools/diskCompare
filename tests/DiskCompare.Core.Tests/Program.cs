@@ -302,10 +302,13 @@ static void NtfsIndexCacheStoresUniqueFilesAndLoadsNewestUsn()
         var newer = CreateCache(nextUsn: 300);
 
         store.Save(older);
+        store.Save(CreateCache(nextUsn: 150));
+        store.Save(CreateCache(nextUsn: 200));
+        store.Save(CreateCache(nextUsn: 250));
         store.Save(newer);
 
         var files = Directory.EnumerateFiles(tempRoot, "*.ntfsindex").ToArray();
-        AssertEqual(2, files.Length, "Cache files are unique");
+        AssertEqual(3, files.Length, "Cache files are pruned");
 
         var loaded = store.TryLoad("T:\\", 0x1234ABCD)
             ?? throw new InvalidOperationException("Expected cache to load.");

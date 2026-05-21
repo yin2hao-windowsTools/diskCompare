@@ -8,6 +8,7 @@ internal sealed class NtfsIndexCacheStore
     private const int MaxCacheRecords = 10_000_000;
     private const int MaxNamesPerRecord = 8;
     private const int MaxCachedStringLength = 32_767;
+    private const int MaxCachesPerVolume = 3;
 
     private readonly string _cacheDirectory;
 
@@ -72,6 +73,7 @@ internal sealed class NtfsIndexCacheStore
             bufferSize: 256 * 1024);
         using var writer = new BinaryWriter(output);
         WriteCache(writer, cache);
+        PruneOldCaches(cache.DriveRoot, cache.VolumeSerialNumber);
     }
 
     private static NtfsIndexCache ReadCache(BinaryReader reader)
@@ -196,6 +198,30 @@ internal sealed class NtfsIndexCacheStore
         EnsureDirectoryIsNotReparsePoint(_cacheDirectory);
         var prefix = GetCacheFilePrefix(driveRoot, volumeSerialNumber);
         return Directory.EnumerateFiles(_cacheDirectory, $"{prefix}-*{CacheExtension}");
+    }
+
+    private void PruneOldCaches(string driveRoot, uint volumeSerialNumber)
+    {
+        var cachePaths = EnumerateCachePaths(driveRoot, volumeSerialNumber)
+            .Select(path => new FileInfo(path))
+            .Where(static info => !info.Attributes.HasFlag(FileAttributes.ReparsePoint))
+            .OrderByDescending(static info => info.CreationTimeUtc)
+            .ThenByDescending(static info => info.Name, StringComparer.OrdinalIgnoreCase)
+            .Skip(MaxCachesPerVolume)
+            .ToArray();
+
+        foreach (var cache in cachePaths)
+        {
+            var fullPath = Path.GetFullPath(cache.FullName);
+            var directory = NormalizeDirectory(Path.GetDirectoryName(fullPath));
+            if (!string.Equals(directory, _cacheDirectory, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            EnsureFileIsNotReparsePoint(fullPath);
+            File.Delete(fullPath);
+        }
     }
 
     private string CreateUniqueCachePath(string driveRoot, uint volumeSerialNumber, long nextUsn)
