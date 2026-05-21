@@ -9,6 +9,8 @@ var tests = new (string Name, Action Run)[]
     ("Snapshot store rejects unsafe output paths", SnapshotStoreRejectsUnsafeOutputPaths),
     ("Snapshot store rejects unsafe input paths", SnapshotStoreRejectsUnsafeInputPaths),
     ("Snapshot comparer handles mixed separators without parent split", SnapshotComparerHandlesMixedSeparators),
+    ("Snapshot comparer uses folder aggregates when present", SnapshotComparerUsesFolderAggregatesWhenPresent),
+    ("Snapshot comparer mixes legacy files and folder aggregates", SnapshotComparerMixesLegacyFilesAndFolderAggregates),
     ("NTFS index cache stores unique files and loads newest USN", NtfsIndexCacheStoresUniqueFilesAndLoadsNewestUsn)
 };
 
@@ -177,6 +179,64 @@ static void SnapshotComparerHandlesMixedSeparators()
     AssertEqual(10, a.DeltaBytes, "A delta");
     var b = Find(a, "B");
     AssertEqual(10, b.DeltaBytes, "B delta");
+}
+
+static void SnapshotComparerUsesFolderAggregatesWhenPresent()
+{
+    var before = new Snapshot(
+        "T:\\",
+        "Test",
+        "NTFS",
+        DateTime.UtcNow,
+        [],
+        [],
+        [
+            new FolderSizeEntry("Media", "Media", 150),
+            new FolderSizeEntry(Path.Combine("Media", "Video"), "Video", 100),
+            new FolderSizeEntry(Path.Combine("Media", "Audio"), "Audio", 50)
+        ]);
+    var now = new Snapshot(
+        "T:\\",
+        "Test",
+        "NTFS",
+        DateTime.UtcNow,
+        [],
+        [],
+        [
+            new FolderSizeEntry("Media", "Media", 160),
+            new FolderSizeEntry(Path.Combine("Media", "Video"), "Video", 150),
+            new FolderSizeEntry(Path.Combine("Media", "Audio"), "Audio", 10),
+            new FolderSizeEntry("New", "New", 30)
+        ]);
+
+    var comparison = new SnapshotComparer().Compare(before, now);
+    AssertEqual(10, Find(comparison.Root, "Media").DeltaBytes, "Aggregate media delta");
+    AssertEqual(50, Find(Find(comparison.Root, "Media"), "Video").DeltaBytes, "Aggregate video delta");
+    AssertEqual(30, Find(comparison.Root, "New").DeltaBytes, "Aggregate new delta");
+}
+
+static void SnapshotComparerMixesLegacyFilesAndFolderAggregates()
+{
+    var before = new Snapshot(
+        "T:\\",
+        "Test",
+        "NTFS",
+        DateTime.UtcNow,
+        [new FileEntry(Path.Combine("Media", "Video", "old.bin"), 100, DateTime.UtcNow)],
+        []);
+    var now = new Snapshot(
+        "T:\\",
+        "Test",
+        "NTFS",
+        DateTime.UtcNow,
+        [],
+        [],
+        [new FolderSizeEntry(Path.Combine("Media", "Video"), "Video", 150), new FolderSizeEntry("Media", "Media", 150)],
+        150);
+
+    var comparison = new SnapshotComparer().Compare(before, now);
+    AssertEqual(50, comparison.DeltaBytes, "Mixed root delta");
+    AssertEqual(50, Find(Find(comparison.Root, "Media"), "Video").DeltaBytes, "Mixed video delta");
 }
 
 static void NtfsIndexCacheStoresUniqueFilesAndLoadsNewestUsn()

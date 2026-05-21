@@ -58,6 +58,7 @@ public sealed class SnapshotBuilder
     {
         var root = EnsureTrailingSeparator(driveRoot);
         var files = new List<FileEntry>(capacity: 64 * 1024);
+        var folderSizes = new Dictionary<string, FolderSizeEntryBuilder>(StringComparer.OrdinalIgnoreCase);
         var errors = new ConcurrentQueue<ScanError>();
         var stack = new Stack<string>();
         stack.Push(root);
@@ -89,7 +90,9 @@ public sealed class SnapshotBuilder
                     }
 
                     var relativePath = Path.GetRelativePath(root, info.FullName);
-                    files.Add(new FileEntry(NormalizeRelativePath(relativePath), info.Length, info.LastWriteTimeUtc));
+                    var normalizedRelativePath = NormalizeRelativePath(relativePath);
+                    files.Add(new FileEntry(normalizedRelativePath, info.Length, info.LastWriteTimeUtc));
+                    AddFolderSizes(folderSizes, normalizedRelativePath, info.Length);
                     filesScanned++;
                     bytesScanned += info.Length;
 
@@ -114,7 +117,11 @@ public sealed class SnapshotBuilder
             SafeGet(() => drive.DriveFormat),
             DateTime.UtcNow,
             files.OrderBy(static file => file.RelativePath, StringComparer.OrdinalIgnoreCase).ToArray(),
-            errors.ToArray());
+            errors.ToArray(),
+            folderSizes.Values
+                .Select(static folder => new FolderSizeEntry(folder.RelativePath, folder.Name, folder.Size))
+                .ToArray(),
+            bytesScanned);
     }
 
     private static IEnumerable<string> EnumerateDirectories(string path, ConcurrentQueue<ScanError> errors)
@@ -196,5 +203,53 @@ public sealed class SnapshotBuilder
     private static string NormalizeRelativePath(string relativePath)
     {
         return relativePath.Replace(Path.AltDirectorySeparatorChar, Path.DirectorySeparatorChar);
+    }
+
+    private static void AddFolderSizes(Dictionary<string, FolderSizeEntryBuilder> folderSizes, string fileRelativePath, long size)
+    {
+        var lastSeparator = fileRelativePath.LastIndexOf(Path.DirectorySeparatorChar);
+        if (lastSeparator <= 0)
+        {
+            return;
+        }
+
+        for (var separatorIndex = lastSeparator; separatorIndex > 0;)
+        {
+            var path = fileRelativePath[..separatorIndex];
+            AddFolderSize(folderSizes, path, size);
+            var previousSeparator = path.LastIndexOf(Path.DirectorySeparatorChar);
+            if (previousSeparator < 0)
+            {
+                break;
+            }
+
+            separatorIndex = previousSeparator;
+        }
+    }
+
+    private static void AddFolderSize(Dictionary<string, FolderSizeEntryBuilder> folderSizes, string relativePath, long size)
+    {
+        if (!folderSizes.TryGetValue(relativePath, out var folder))
+        {
+            folder = new FolderSizeEntryBuilder(relativePath, GetName(relativePath));
+            folderSizes[relativePath] = folder;
+        }
+
+        folder.Size += size;
+    }
+
+    private static string GetName(string relativePath)
+    {
+        var separator = relativePath.LastIndexOf(Path.DirectorySeparatorChar);
+        return separator < 0 ? relativePath : relativePath[(separator + 1)..];
+    }
+
+    private sealed class FolderSizeEntryBuilder(string relativePath, string name)
+    {
+        public string RelativePath { get; } = relativePath;
+
+        public string Name { get; } = name;
+
+        public long Size { get; set; }
     }
 }

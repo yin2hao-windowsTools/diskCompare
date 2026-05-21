@@ -13,8 +13,9 @@ public sealed class SnapshotComparer
             [string.Empty] = root
         };
 
-        Accumulate(snapshot.Files, isSnapshot: true, index, root);
-        Accumulate(current.Files, isSnapshot: false, index, root);
+        AccumulateSnapshot(snapshot, isSnapshot: true, index, root);
+        AccumulateSnapshot(current, isSnapshot: false, index, root);
+
         SortChildren(root);
 
         var largest = index.Values
@@ -27,7 +28,63 @@ public sealed class SnapshotComparer
         return new SnapshotComparison(snapshot, current, root, largest);
     }
 
-    private static void Accumulate(
+    private static void AccumulateSnapshot(
+        Snapshot snapshot,
+        bool isSnapshot,
+        Dictionary<string, FolderDelta> index,
+        FolderDelta root)
+    {
+        if (snapshot.FolderSizes.Count > 0)
+        {
+            AccumulateFolders(snapshot.FolderSizes, isSnapshot, index, root);
+            AddSize(root, snapshot.TotalBytes, isSnapshot);
+            return;
+        }
+
+        AccumulateFiles(snapshot.Files, isSnapshot, index, root);
+    }
+
+    private static void AccumulateFolders(
+        IReadOnlyList<FolderSizeEntry> folders,
+        bool isSnapshot,
+        Dictionary<string, FolderDelta> index,
+        FolderDelta root)
+    {
+        foreach (var folder in folders)
+        {
+            var path = folder.RelativePath;
+            if (string.IsNullOrEmpty(path))
+            {
+                continue;
+            }
+
+            var current = EnsureFolderPath(path, folder.Name, index, root);
+            AddSize(current, folder.Size, isSnapshot);
+        }
+    }
+
+    private static FolderDelta EnsureFolderPath(
+        string relativePath,
+        string name,
+        Dictionary<string, FolderDelta> index,
+        FolderDelta root)
+    {
+        if (index.TryGetValue(relativePath, out var existing))
+        {
+            return existing;
+        }
+
+        var parentPath = GetParentPath(relativePath);
+        var parent = string.IsNullOrEmpty(parentPath)
+            ? root
+            : EnsureFolderPath(parentPath, GetName(parentPath), index, root);
+        var child = new FolderDelta(name, relativePath);
+        index[relativePath] = child;
+        parent.Children.Add(child);
+        return child;
+    }
+
+    private static void AccumulateFiles(
         IReadOnlyList<FileEntry> files,
         bool isSnapshot,
         Dictionary<string, FolderDelta> index,
@@ -71,6 +128,18 @@ public sealed class SnapshotComparer
                 segmentStart = indexInPath + 1;
             }
         }
+    }
+
+    private static string GetParentPath(string relativePath)
+    {
+        var separator = relativePath.LastIndexOf(Path.DirectorySeparatorChar);
+        return separator < 0 ? string.Empty : relativePath[..separator];
+    }
+
+    private static string GetName(string relativePath)
+    {
+        var separator = relativePath.LastIndexOf(Path.DirectorySeparatorChar);
+        return separator < 0 ? relativePath : relativePath[(separator + 1)..];
     }
 
     private static bool IsDirectorySeparator(char value)
