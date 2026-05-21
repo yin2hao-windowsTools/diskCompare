@@ -113,14 +113,13 @@ public partial class MainWindow : Window
         var driveRoot = _loadedSnapshot.DriveRoot;
         if (!Directory.Exists(driveRoot))
         {
-            var drive = GetSelectedDrive();
-            if (drive is null)
-            {
-                return;
-            }
-
-            driveRoot = drive.RootPath;
-            StatusTextBlock.Text = $"快照原盘 { _loadedSnapshot.DriveRoot } 不可用，将使用当前选择的 {driveRoot}。";
+            MessageBox.Show(
+                this,
+                $"快照所属盘 {_loadedSnapshot.DriveRoot} 当前不可用。为避免误扫其他磁盘，请重新接入该盘或加载对应盘符的快照。",
+                "快照盘符不可用",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+            return;
         }
 
         await RunScanAsync(
@@ -143,7 +142,7 @@ public partial class MainWindow : Window
     private void OpenSnapshotFolder_Click(object sender, RoutedEventArgs e)
     {
         var directory = _snapshotStore.GetDefaultSnapshotDirectory();
-        Directory.CreateDirectory(directory);
+        _snapshotStore.EnsureSnapshotDirectoryExists();
         Process.Start(new ProcessStartInfo
         {
             FileName = directory,

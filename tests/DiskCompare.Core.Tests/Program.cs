@@ -4,7 +4,9 @@ using DiskCompare.Core.Snapshots;
 var tests = new (string Name, Action Run)[]
 {
     ("Compare aggregates folder growth and shrinkage", CompareAggregatesFolderGrowthAndShrinkage),
-    ("Snapshot store round trips compressed data", SnapshotStoreRoundTripsCompressedData)
+    ("Snapshot store round trips compressed data", SnapshotStoreRoundTripsCompressedData),
+    ("Snapshot store rejects unsafe output paths", SnapshotStoreRejectsUnsafeOutputPaths),
+    ("Snapshot store rejects unsafe input paths", SnapshotStoreRejectsUnsafeInputPaths)
 };
 
 foreach (var test in tests)
@@ -58,7 +60,7 @@ static void CompareAggregatesFolderGrowthAndShrinkage()
 
 static void SnapshotStoreRoundTripsCompressedData()
 {
-    var tempFile = Path.Combine(Path.GetTempPath(), $"diskcompare-test-{Guid.NewGuid():N}.dcsnap");
+    var tempRoot = CreateOwnedTempDirectory();
 
     try
     {
@@ -70,7 +72,8 @@ static void SnapshotStoreRoundTripsCompressedData()
             [new FileEntry(Path.Combine("Folder", "file.txt"), 42, DateTime.UtcNow)],
             [new ScanError(Path.Combine("T:\\", "System Volume Information"), "Access denied")]);
 
-        var store = new SnapshotStore();
+        var store = new SnapshotStore(tempRoot);
+        var tempFile = store.CreateDefaultSnapshotPath(snapshot);
         store.SaveAsync(snapshot, tempFile).GetAwaiter().GetResult();
         var loaded = store.LoadAsync(tempFile).GetAwaiter().GetResult();
 
@@ -81,10 +84,61 @@ static void SnapshotStoreRoundTripsCompressedData()
     }
     finally
     {
-        if (File.Exists(tempFile))
-        {
-            File.Delete(tempFile);
-        }
+        DeleteOwnedTempDirectory(tempRoot);
+    }
+}
+
+static void SnapshotStoreRejectsUnsafeOutputPaths()
+{
+    var tempRoot = CreateOwnedTempDirectory();
+    var outsideRoot = CreateOwnedTempDirectory();
+
+    try
+    {
+        var snapshot = new Snapshot("T:\\", "Test", "NTFS", DateTime.UtcNow, [], []);
+        var store = new SnapshotStore(tempRoot);
+        var safePath = store.CreateDefaultSnapshotPath(snapshot);
+        store.SaveAsync(snapshot, safePath).GetAwaiter().GetResult();
+
+        AssertThrows<IOException>(
+            () => store.SaveAsync(snapshot, safePath).GetAwaiter().GetResult(),
+            "Existing snapshot overwrite");
+
+        AssertThrows<InvalidOperationException>(
+            () => store.SaveAsync(snapshot, Path.Combine(outsideRoot, "outside.dcsnap")).GetAwaiter().GetResult(),
+            "Outside output path");
+
+        AssertThrows<InvalidOperationException>(
+            () => store.SaveAsync(snapshot, Path.Combine(tempRoot, "wrong.txt")).GetAwaiter().GetResult(),
+            "Wrong extension");
+    }
+    finally
+    {
+        DeleteOwnedTempDirectory(tempRoot);
+        DeleteOwnedTempDirectory(outsideRoot);
+    }
+}
+
+static void SnapshotStoreRejectsUnsafeInputPaths()
+{
+    var tempRoot = CreateOwnedTempDirectory();
+
+    try
+    {
+        var wrongExtension = Path.Combine(tempRoot, "not-a-snapshot.txt");
+        File.WriteAllText(wrongExtension, "not a snapshot");
+
+        AssertThrows<InvalidOperationException>(
+            () => new SnapshotStore(tempRoot).LoadAsync(wrongExtension).GetAwaiter().GetResult(),
+            "Wrong input extension");
+
+        AssertThrows<FileNotFoundException>(
+            () => new SnapshotStore(tempRoot).LoadAsync(Path.Combine(tempRoot, "missing.dcsnap")).GetAwaiter().GetResult(),
+            "Missing input file");
+    }
+    finally
+    {
+        DeleteOwnedTempDirectory(tempRoot);
     }
 }
 
@@ -100,4 +154,60 @@ static void AssertEqual<T>(T expected, T actual, string label)
     {
         throw new InvalidOperationException($"{label}: expected {expected}, got {actual}.");
     }
+}
+
+static void AssertThrows<TException>(Action action, string label)
+    where TException : Exception
+{
+    try
+    {
+        action();
+    }
+    catch (TException)
+    {
+        return;
+    }
+
+    throw new InvalidOperationException($"{label}: expected exception {typeof(TException).Name}.");
+}
+
+static string CreateOwnedTempDirectory()
+{
+    var root = Path.Combine(Path.GetTempPath(), "DiskCompare.Tests", Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(root);
+    return root;
+}
+
+static void DeleteOwnedTempDirectory(string path)
+{
+    var fullPath = Path.GetFullPath(path);
+    var allowedRoot = Path.GetFullPath(Path.Combine(Path.GetTempPath(), "DiskCompare.Tests"));
+    if (!IsPathInsideDirectory(fullPath, allowedRoot))
+    {
+        throw new InvalidOperationException($"Refusing to delete path outside owned test temp directory: {fullPath}");
+    }
+
+    if (Directory.Exists(fullPath))
+    {
+        foreach (var file in Directory.EnumerateFiles(fullPath))
+        {
+            File.Delete(file);
+        }
+
+        if (Directory.EnumerateDirectories(fullPath).Any())
+        {
+            throw new InvalidOperationException($"Refusing recursive delete in test cleanup: {fullPath}");
+        }
+
+        Directory.Delete(fullPath, recursive: false);
+    }
+}
+
+static bool IsPathInsideDirectory(string path, string directory)
+{
+    var normalizedDirectory = Path.EndsInDirectorySeparator(directory)
+        ? directory
+        : directory + Path.DirectorySeparatorChar;
+
+    return path.StartsWith(normalizedDirectory, StringComparison.OrdinalIgnoreCase);
 }
