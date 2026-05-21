@@ -1,0 +1,56 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and publish release
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Normalize version
+        id: version
+        shell: pwsh
+        run: |
+          $info = ./scripts/Normalize-Version.ps1 -TagName "${{ github.ref_name }}" | ConvertFrom-Json
+          "version=$($info.Version)" >> $env:GITHUB_OUTPUT
+          "file_version=$($info.FileVersion)" >> $env:GITHUB_OUTPUT
+          "display_version=$($info.DisplayVersion)" >> $env:GITHUB_OUTPUT
+
+      - name: Install WiX
+        shell: pwsh
+        run: dotnet tool install wix --version 4.0.6 --tool-path .tools/wix
+
+      - name: Build release artifacts
+        shell: pwsh
+        run: |
+          ./scripts/Build-Release.ps1 -TagName "${{ github.ref_name }}" -WixPath "$pwd/.tools/wix/wix.exe"
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: DiskCompare ${{ steps.version.outputs.display_version }}
+          body_path: artifacts/release-notes.md
+          fail_on_unmatched_files: true
+          overwrite_files: true
+          files: |
+            artifacts/release/DiskCompare-${{ steps.version.outputs.display_version }}-win-x64.exe
+            artifacts/release/DiskCompare-${{ steps.version.outputs.display_version }}-win-x64.msi
+            artifacts/release/DiskCompare-${{ steps.version.outputs.display_version }}-win-x64-portable.zip
