@@ -5,6 +5,7 @@ namespace DiskCompare.Core.Snapshots;
 public sealed class SnapshotBuilder
 {
     private const int ProgressInterval = 250;
+    private readonly NtfsMftSnapshotProvider _ntfsMftSnapshotProvider = new();
 
     public async Task<Snapshot> CreateAsync(
         string driveRoot,
@@ -22,8 +23,32 @@ public sealed class SnapshotBuilder
             throw new DirectoryNotFoundException(normalizedRoot);
         }
 
-        return await Task.Run(() => CreateCore(normalizedRoot, progress, cancellationToken), cancellationToken)
+        return await Task.Run(() => CreateFastestAvailable(normalizedRoot, progress, cancellationToken), cancellationToken)
             .ConfigureAwait(false);
+    }
+
+    private Snapshot CreateFastestAvailable(
+        string driveRoot,
+        IProgress<SnapshotProgress>? progress,
+        CancellationToken cancellationToken)
+    {
+        var fastSnapshot = _ntfsMftSnapshotProvider.TryCreate(
+            driveRoot,
+            progress,
+            cancellationToken,
+            out var fallbackReason);
+
+        if (fastSnapshot is not null)
+        {
+            return fastSnapshot;
+        }
+
+        if (!string.IsNullOrWhiteSpace(fallbackReason))
+        {
+            progress?.Report(new SnapshotProgress($"NTFS 快速索引不可用，回退目录扫描: {fallbackReason}", 0, 0, 0, "目录扫描"));
+        }
+
+        return CreateCore(driveRoot, progress, cancellationToken);
     }
 
     private static Snapshot CreateCore(
@@ -70,7 +95,7 @@ public sealed class SnapshotBuilder
 
                     if (filesScanned % ProgressInterval == 0)
                     {
-                        progress?.Report(new SnapshotProgress(info.FullName, filesScanned, bytesScanned, errors.Count));
+                        progress?.Report(new SnapshotProgress(info.FullName, filesScanned, bytesScanned, errors.Count, "目录扫描"));
                     }
                 }
                 catch (Exception ex) when (IsRecoverable(ex))
@@ -80,7 +105,7 @@ public sealed class SnapshotBuilder
             }
         }
 
-        progress?.Report(new SnapshotProgress(root, filesScanned, bytesScanned, errors.Count));
+        progress?.Report(new SnapshotProgress(root, filesScanned, bytesScanned, errors.Count, "目录扫描"));
 
         var drive = new DriveInfo(root);
         return new Snapshot(

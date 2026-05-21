@@ -186,7 +186,8 @@ public partial class MainWindow : Window
     {
         var progress = new Progress<SnapshotProgress>(value =>
         {
-            ProgressTextBlock.Text = $"{FormatBytes(value.BytesScanned)} / {value.FilesScanned:N0} 个文件 / {value.ErrorCount:N0} 个错误\n{value.CurrentPath}";
+            var mode = string.IsNullOrWhiteSpace(value.Mode) ? "扫描" : value.Mode;
+            ProgressTextBlock.Text = $"{mode}\n{FormatBytes(value.BytesScanned)} / {value.FilesScanned:N0} 个文件 / {value.ErrorCount:N0} 个错误\n{value.CurrentPath}";
         });
 
         return await _snapshotBuilder.CreateAsync(driveRoot, progress, cancellationToken);

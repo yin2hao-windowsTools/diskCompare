@@ -4,7 +4,8 @@
 
 ## 已加固的安全边界
 
-- 扫描盘符时只调用 `DirectoryInfo.EnumerateDirectories`、`DirectoryInfo.EnumerateFiles` 和 `FileInfo` 属性读取，不打开文件内容，不写入被扫描盘。
+- NTFS 快速索引只用 `GENERIC_READ` 打开卷设备 `\\.\X:`，解析 boot sector、MFT 记录和属性，不写入卷设备。
+- 快速索引不可用时，目录扫描只调用 `DirectoryInfo.EnumerateDirectories`、`DirectoryInfo.EnumerateFiles` 和 `FileInfo` 属性读取，不打开文件内容，不写入被扫描盘。
 - 跳过重解析点，避免进入 junction、symlink 等可能指向盘外或形成循环的路径。
 - 无权限、路径过长、IO 异常等被记录为扫描错误并跳过，不尝试修复或修改文件权限。
 - 快照保存只允许写入 `SnapshotStore` 管理的快照目录，默认是 `%LOCALAPPDATA%\DiskCompare\Snapshots`。
@@ -17,6 +18,8 @@
 
 这些点不应损坏用户文件，但属于有外部环境影响或资源风险的位置：
 
+- `NtfsMftSnapshotProvider` 会只读打开原始卷设备并顺序读取 NTFS 元数据。风险：通常需要管理员权限或卷读取权限；读取量集中在 MFT，速度快但会产生磁盘读取负载。
+- NTFS MFT 解析代码只支持本地盘符形式的 NTFS 卷。风险：非常规 NTFS、损坏卷、加密/过滤驱动卷可能解析失败；应用会回退到目录扫描。
 - `SnapshotBuilder` 会遍历所选盘符的目录元数据。风险：大盘扫描会产生磁盘读取负载，可能让机械硬盘或网络盘变慢；不会写入或删除文件。
 - `SnapshotBuilder` 读取 `FileInfo.Length` 和 `LastWriteTimeUtc`。风险：某些文件系统配置可能因为访问元数据而更新最后访问时间，某些特殊文件系统驱动也可能在读取元数据时触发自身行为；应用代码不写入文件内容、不改时间戳、不改属性。
 - `SnapshotStore.SaveAsync` 会在快照目录创建 `.dcsnap` 文件。风险：会占用用户本机空间；已限制到快照目录且拒绝覆盖。

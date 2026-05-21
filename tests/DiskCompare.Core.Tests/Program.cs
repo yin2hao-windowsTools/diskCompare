@@ -4,6 +4,7 @@ using DiskCompare.Core.Snapshots;
 var tests = new (string Name, Action Run)[]
 {
     ("Compare aggregates folder growth and shrinkage", CompareAggregatesFolderGrowthAndShrinkage),
+    ("Snapshot progress exposes scan mode", SnapshotProgressExposesScanMode),
     ("Snapshot store round trips compressed data", SnapshotStoreRoundTripsCompressedData),
     ("Snapshot store rejects unsafe output paths", SnapshotStoreRejectsUnsafeOutputPaths),
     ("Snapshot store rejects unsafe input paths", SnapshotStoreRejectsUnsafeInputPaths)
@@ -56,6 +57,12 @@ static void CompareAggregatesFolderGrowthAndShrinkage()
 
     var added = Find(comparison.Root, "New");
     AssertEqual(SizeDeltaKind.Added, added.Kind, "New kind");
+}
+
+static void SnapshotProgressExposesScanMode()
+{
+    var progress = new SnapshotProgress("C:\\", 10, 1024, 1, "NTFS MFT 快速索引");
+    AssertEqual("NTFS MFT 快速索引", progress.Mode, "Progress mode");
 }
 
 static void SnapshotStoreRoundTripsCompressedData()
