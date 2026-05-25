@@ -210,6 +210,20 @@ public partial class MainWindow : Window
             StatusTextBlock.Text = "已获取最新 Release";
             await PromptInstallUpdateAsync(latestRelease, currentDisplayVersion, title: "已找到最新 Release");
         }
+        catch (UpdateCheckException ex)
+        {
+            StatusTextBlock.Text = "检查更新失败";
+            var result = MessageBox.Show(
+                this,
+                $"{ex.Message}\n\n是否打开 GitHub Release 页面？",
+                "检查更新失败",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Warning);
+            if (result == MessageBoxResult.Yes)
+            {
+                OpenExternalUri($"{ReleaseUpdateService.RepositoryUrl}/releases/latest");
+            }
+        }
         catch (Exception ex)
         {
             ShowError("检查更新失败", ex);
