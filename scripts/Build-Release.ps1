@@ -92,7 +92,7 @@ try {
         -pdbtype none `
         -out $msiArtifact
 
-    & (Join-Path $PSScriptRoot "New-ReleaseNotes.ps1") -CurrentTag $TagName -OutputPath $releaseNotesPath
+    & (Join-Path $PSScriptRoot "New-ReleaseNotes.ps1") -CurrentTag $TagName -OutputPath $releaseNotesPath -Runtime $Runtime
 
     [pscustomobject]@{
         Version = $version
