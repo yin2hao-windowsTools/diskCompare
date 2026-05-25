@@ -18,6 +18,7 @@ public partial class MainWindow : Window
     private readonly SnapshotBuilder _snapshotBuilder = new();
     private readonly SnapshotStore _snapshotStore = new();
     private readonly SnapshotComparer _snapshotComparer = new();
+    private readonly ReleaseUpdateService _releaseUpdateService = new();
     private readonly ObservableCollection<DriveViewModel> _drives = [];
     private readonly ObservableCollection<FolderDeltaViewModel> _treeNodes = [];
     private readonly ObservableCollection<FolderDeltaViewModel> _largestChanges = [];
@@ -148,6 +149,86 @@ public partial class MainWindow : Window
             FileName = directory,
             UseShellExecute = true
         });
+    }
+
+    private void OpenDeveloperHome_Click(object sender, RoutedEventArgs e)
+    {
+        OpenExternalUri(ReleaseUpdateService.DeveloperHomeUrl);
+    }
+
+    private async void CheckUpdates_Click(object sender, RoutedEventArgs e)
+    {
+        StatusTextBlock.Text = "正在检查更新...";
+
+        try
+        {
+            var latestRelease = await _releaseUpdateService.GetLatestReleaseAsync();
+            var currentDisplayVersion = ReleaseUpdateService.GetCurrentDisplayVersion();
+            var currentVersion = ReleaseUpdateService.GetCurrentVersion();
+
+            if (latestRelease is null)
+            {
+                StatusTextBlock.Text = "暂无可用 Release";
+                MessageBox.Show(this, "GitHub 仓库当前没有可用 Release。", "检查更新", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+
+            if (latestRelease.Version is not null && currentVersion is not null)
+            {
+                if (latestRelease.Version > currentVersion)
+                {
+                    StatusTextBlock.Text = $"发现新版本 {latestRelease.TagName}";
+                    PromptOpenRelease(
+                        "发现新版本",
+                        $"当前版本: {currentDisplayVersion}\n最新版本: {latestRelease.Name} ({latestRelease.TagName})\n\n是否打开 Release 页面？",
+                        latestRelease.HtmlUrl);
+                    return;
+                }
+
+                StatusTextBlock.Text = "当前已是最新版本";
+                MessageBox.Show(
+                    this,
+                    $"当前已是最新版本。\n当前版本: {currentDisplayVersion}\nGitHub 最新版本: {latestRelease.Name} ({latestRelease.TagName})",
+                    "检查更新",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Information);
+                return;
+            }
+
+            StatusTextBlock.Text = "已获取最新 Release";
+            PromptOpenRelease(
+                "检查更新",
+                $"当前版本: {currentDisplayVersion}\nGitHub 最新 Release: {latestRelease.Name} ({latestRelease.TagName})\n\n无法自动比较版本号，是否打开 Release 页面？",
+                latestRelease.HtmlUrl);
+        }
+        catch (Exception ex)
+        {
+            ShowError("检查更新失败", ex);
+        }
+    }
+
+    private void ShowLicense_Click(object sender, RoutedEventArgs e)
+    {
+        var result = MessageBox.Show(
+            this,
+            "许可证: 当前应用未内置 LICENSE 文件。\n\n请访问 GitHub 仓库确认最新许可证说明，或联系开发者获取授权信息。\n\n是否打开 GitHub 仓库？",
+            "许可证",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Information);
+        if (result == MessageBoxResult.Yes)
+        {
+            OpenExternalUri(ReleaseUpdateService.RepositoryUrl);
+        }
+    }
+
+    private void ShowAbout_Click(object sender, RoutedEventArgs e)
+    {
+        MessageBox.Show(
+            this,
+            $"DiskCompare\n版本: {ReleaseUpdateService.GetCurrentDisplayVersion()}\n\n磁盘快照与文件夹体积变化对比工具。\n\n开发者主页: {ReleaseUpdateService.DeveloperHomeUrl}\nGitHub 仓库: {ReleaseUpdateService.RepositoryUrl}",
+            "关于 DiskCompare",
+            MessageBoxButton.OK,
+            MessageBoxImage.Information);
     }
 
     private void RefreshDrives()
@@ -289,6 +370,31 @@ public partial class MainWindow : Window
     {
         StatusTextBlock.Text = title;
         MessageBox.Show(this, ex.Message, title, MessageBoxButton.OK, MessageBoxImage.Error);
+    }
+
+    private void PromptOpenRelease(string title, string message, Uri releaseUrl)
+    {
+        var result = MessageBox.Show(this, message, title, MessageBoxButton.YesNo, MessageBoxImage.Information);
+        if (result == MessageBoxResult.Yes)
+        {
+            OpenExternalUri(releaseUrl.ToString());
+        }
+    }
+
+    private void OpenExternalUri(string uri)
+    {
+        try
+        {
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = uri,
+                UseShellExecute = true
+            });
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception)
+        {
+            ShowError("无法打开链接", ex);
+        }
     }
 
     internal static string FormatSignedBytes(long value)

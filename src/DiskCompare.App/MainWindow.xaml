@@ -61,10 +61,33 @@
                                FontSize="12"
                                Margin="0,2,0,0" />
                 </StackPanel>
-                <Button Grid.Column="1"
-                        Content="打开快照目录"
-                        Click="OpenSnapshotFolder_Click"
-                        VerticalAlignment="Center" />
+                <StackPanel Grid.Column="1"
+                            Orientation="Horizontal"
+                            VerticalAlignment="Center">
+                    <Button Content="打开快照目录"
+                            Click="OpenSnapshotFolder_Click"
+                            VerticalAlignment="Center" />
+                    <Menu Background="Transparent"
+                          BorderThickness="0"
+                          Margin="10,0,0,0"
+                          VerticalAlignment="Center">
+                        <MenuItem Padding="10,7">
+                            <MenuItem.Header>
+                                <TextBlock Text="关于"
+                                           Foreground="#FFFFFF" />
+                            </MenuItem.Header>
+                            <MenuItem Header="开发者主页"
+                                      Click="OpenDeveloperHome_Click" />
+                            <MenuItem Header="检查更新"
+                                      Click="CheckUpdates_Click" />
+                            <Separator />
+                            <MenuItem Header="许可证"
+                                      Click="ShowLicense_Click" />
+                            <MenuItem Header="关于 DiskCompare"
+                                      Click="ShowAbout_Click" />
+                        </MenuItem>
+                    </Menu>
+                </StackPanel>
             </Grid>
         </Border>
 
