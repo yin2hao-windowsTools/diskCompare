@@ -19,12 +19,14 @@ public partial class MainWindow : Window
     private readonly SnapshotStore _snapshotStore = new();
     private readonly SnapshotComparer _snapshotComparer = new();
     private readonly ReleaseUpdateService _releaseUpdateService = new();
+    private readonly ApplicationUpdater _applicationUpdater = new();
     private readonly ObservableCollection<DriveViewModel> _drives = [];
     private readonly ObservableCollection<FolderDeltaViewModel> _treeNodes = [];
     private readonly ObservableCollection<FolderDeltaViewModel> _largestChanges = [];
 
     private Snapshot? _loadedSnapshot;
     private CancellationTokenSource? _scanCancellation;
+    private bool _updateInProgress;
 
     public MainWindow()
     {
@@ -158,6 +160,19 @@ public partial class MainWindow : Window
 
     private async void CheckUpdates_Click(object sender, RoutedEventArgs e)
     {
+        if (_scanCancellation is not null)
+        {
+            MessageBox.Show(this, "扫描进行中，完成或取消扫描后再更新。", "检查更新", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        if (_updateInProgress)
+        {
+            MessageBox.Show(this, "更新检查正在进行中。", "检查更新", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        _updateInProgress = true;
         StatusTextBlock.Text = "正在检查更新...";
 
         try
@@ -178,10 +193,7 @@ public partial class MainWindow : Window
                 if (latestRelease.Version > currentVersion)
                 {
                     StatusTextBlock.Text = $"发现新版本 {latestRelease.TagName}";
-                    PromptOpenRelease(
-                        "发现新版本",
-                        $"当前版本: {currentDisplayVersion}\n最新版本: {latestRelease.Name} ({latestRelease.TagName})\n\n是否打开 Release 页面？",
-                        latestRelease.HtmlUrl);
+                    await PromptInstallUpdateAsync(latestRelease, currentDisplayVersion, title: "发现新版本");
                     return;
                 }
 
@@ -196,14 +208,17 @@ public partial class MainWindow : Window
             }
 
             StatusTextBlock.Text = "已获取最新 Release";
-            PromptOpenRelease(
-                "检查更新",
-                $"当前版本: {currentDisplayVersion}\nGitHub 最新 Release: {latestRelease.Name} ({latestRelease.TagName})\n\n无法自动比较版本号，是否打开 Release 页面？",
-                latestRelease.HtmlUrl);
+            await PromptInstallUpdateAsync(latestRelease, currentDisplayVersion, title: "已找到最新 Release");
         }
         catch (Exception ex)
         {
             ShowError("检查更新失败", ex);
+        }
+        finally
+        {
+            _updateInProgress = false;
+            SetBusy(false);
+            ActivityProgressBar.Value = 0;
         }
     }
 
@@ -229,6 +244,85 @@ public partial class MainWindow : Window
             "关于 DiskCompare",
             MessageBoxButton.OK,
             MessageBoxImage.Information);
+    }
+
+    private async Task PromptInstallUpdateAsync(ReleaseInfo latestRelease, string currentDisplayVersion, string title)
+    {
+        var asset = _applicationUpdater.SelectPreferredAsset(latestRelease);
+        if (asset is null)
+        {
+            PromptOpenRelease(
+                title,
+                $"当前版本: {currentDisplayVersion}\nGitHub Release: {latestRelease.Name} ({latestRelease.TagName})\n\n未找到可自动安装的 exe 或 msi 文件，是否打开 Release 页面？",
+                latestRelease.HtmlUrl);
+            return;
+        }
+
+        var packageKind = ApplicationUpdater.GetPackageKind(asset);
+        var actionText = packageKind == UpdatePackageKind.MsiInstaller
+            ? "下载完成后会启动安装程序并退出 DiskCompare。"
+            : "下载完成后会退出 DiskCompare，覆盖当前程序文件并重启。";
+        var result = MessageBox.Show(
+            this,
+            $"当前版本: {currentDisplayVersion}\n最新版本: {latestRelease.Name} ({latestRelease.TagName})\n\n{actionText}\n\n更新文件: {asset.Name}\n是否下载并自动更新？",
+            title,
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Information);
+
+        if (result == MessageBoxResult.Yes)
+        {
+            await DownloadAndApplyUpdateAsync(asset);
+        }
+    }
+
+    private async Task DownloadAndApplyUpdateAsync(ReleaseAsset asset)
+    {
+        SetBusy(true);
+        ActivityProgressBar.Value = 0;
+        ActivityProgressBar.IsIndeterminate = asset.Size <= 0;
+        StatusTextBlock.Text = "正在下载更新...";
+        ProgressTextBlock.Text = $"正在下载 {asset.Name}";
+
+        var progress = new Progress<UpdateDownloadProgress>(value => ShowUpdateDownloadProgress(asset, value));
+        var package = await _applicationUpdater.DownloadAsync(asset, progress);
+
+        StatusTextBlock.Text = "更新已下载";
+        ProgressTextBlock.Text = $"更新已下载: {Path.GetFileName(package.FilePath)}";
+
+        var packageKind = package.Kind == UpdatePackageKind.MsiInstaller ? "启动安装程序" : "覆盖当前程序并重启";
+        var result = MessageBox.Show(
+            this,
+            $"更新文件已下载完成。\n\n下一步将{packageKind}，当前程序会退出。\n是否继续？",
+            "准备安装更新",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Information);
+        if (result != MessageBoxResult.Yes)
+        {
+            StatusTextBlock.Text = "更新已下载，尚未安装";
+            return;
+        }
+
+        StatusTextBlock.Text = "正在启动更新...";
+        _applicationUpdater.ApplyUpdateAndRestart(package);
+        Application.Current.Shutdown();
+    }
+
+    private void ShowUpdateDownloadProgress(ReleaseAsset asset, UpdateDownloadProgress progress)
+    {
+        var totalBytes = progress.TotalBytes > 0 ? progress.TotalBytes : asset.Size;
+        if (totalBytes <= 0)
+        {
+            ActivityProgressBar.IsIndeterminate = true;
+            StatusTextBlock.Text = "正在下载更新...";
+            ProgressTextBlock.Text = $"正在下载 {asset.Name}\n{FormatBytes(progress.ReceivedBytes)}";
+            return;
+        }
+
+        var percentage = Math.Clamp(progress.ReceivedBytes * 100.0 / totalBytes, 0, 100);
+        ActivityProgressBar.IsIndeterminate = false;
+        ActivityProgressBar.Value = percentage;
+        StatusTextBlock.Text = $"正在下载更新... {percentage:N0}%";
+        ProgressTextBlock.Text = $"正在下载 {asset.Name}\n{FormatBytes(progress.ReceivedBytes)} / {FormatBytes(totalBytes)}";
     }
 
     private void RefreshDrives()
@@ -313,7 +407,7 @@ public partial class MainWindow : Window
         CreateSnapshotButton.IsEnabled = !busy;
         LoadSnapshotButton.IsEnabled = !busy;
         CompareButton.IsEnabled = !busy && _loadedSnapshot is not null;
-        CancelButton.IsEnabled = busy;
+        CancelButton.IsEnabled = busy && _scanCancellation is not null;
         DriveComboBox.IsEnabled = !busy;
     }
 

@@ -51,7 +51,12 @@ public sealed class ReleaseUpdateService
             releaseUrl = new Uri($"{RepositoryUrl}/releases/latest");
         }
 
-        return new ReleaseInfo(tagName, string.IsNullOrWhiteSpace(name) ? tagName : name, releaseUrl, TryParseVersion(tagName));
+        return new ReleaseInfo(
+            tagName,
+            string.IsNullOrWhiteSpace(name) ? tagName : name,
+            releaseUrl,
+            TryParseVersion(tagName),
+            ReadAssets(root));
     }
 
     public static string GetCurrentDisplayVersion()
@@ -110,6 +115,39 @@ public sealed class ReleaseUpdateService
 
         return new Version(segments[0], segments[1], segments[2], segments[3]);
     }
+
+    private static IReadOnlyList<ReleaseAsset> ReadAssets(JsonElement root)
+    {
+        if (!root.TryGetProperty("assets", out var assetsElement) || assetsElement.ValueKind != JsonValueKind.Array)
+        {
+            return [];
+        }
+
+        var assets = new List<ReleaseAsset>();
+        foreach (var assetElement in assetsElement.EnumerateArray())
+        {
+            var name = assetElement.TryGetProperty("name", out var nameProperty)
+                ? nameProperty.GetString()
+                : null;
+            var downloadUrl = assetElement.TryGetProperty("browser_download_url", out var urlProperty)
+                ? urlProperty.GetString()
+                : null;
+
+            if (string.IsNullOrWhiteSpace(name) || !Uri.TryCreate(downloadUrl, UriKind.Absolute, out var assetUrl))
+            {
+                continue;
+            }
+
+            var size = assetElement.TryGetProperty("size", out var sizeProperty) && sizeProperty.TryGetInt64(out var assetSize)
+                ? assetSize
+                : 0;
+            assets.Add(new ReleaseAsset(name, assetUrl, size));
+        }
+
+        return assets;
+    }
 }
 
-public sealed record ReleaseInfo(string TagName, string Name, Uri HtmlUrl, Version? Version);
+public sealed record ReleaseInfo(string TagName, string Name, Uri HtmlUrl, Version? Version, IReadOnlyList<ReleaseAsset> Assets);
+
+public sealed record ReleaseAsset(string Name, Uri DownloadUrl, long Size);
