@@ -6,6 +6,7 @@
         xmlns:local="clr-namespace:DiskCompare.App"
         mc:Ignorable="d"
         Title="DiskCompare"
+        Icon="Assets/DiskCompare.ico"
         Width="1220"
         Height="760"
         MinWidth="960"

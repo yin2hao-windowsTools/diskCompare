@@ -89,6 +89,7 @@ try {
         -arch x64 `
         -d "ProductVersion=$version" `
         -d "PublishDir=$publishDir" `
+        -d "IconPath=$(Join-Path $repoRoot "src\DiskCompare.App\Assets\DiskCompare.ico")" `
         -pdbtype none `
         -out $msiArtifact
 

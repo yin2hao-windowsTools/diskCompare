@@ -8,6 +8,8 @@
 
     <MajorUpgrade DowngradeErrorMessage="A newer version of DiskCompare is already installed." />
     <MediaTemplate EmbedCab="yes" />
+    <Icon Id="DiskCompareIcon" SourceFile="$(var.IconPath)" />
+    <Property Id="ARPPRODUCTICON" Value="DiskCompareIcon" />
 
     <Feature Id="MainFeature" Title="DiskCompare" Level="1">
       <ComponentRef Id="ApplicationExecutable" />
@@ -28,6 +30,7 @@
           <Shortcut
             Id="DiskCompareStartMenuShortcut"
             Name="DiskCompare"
+            Icon="DiskCompareIcon"
             Target="[INSTALLFOLDER]DiskCompare.exe"
             WorkingDirectory="INSTALLFOLDER" />
           <RemoveFolder Id="RemoveApplicationProgramsFolder" On="uninstall" />

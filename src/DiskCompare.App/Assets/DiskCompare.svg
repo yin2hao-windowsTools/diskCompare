@@ -1,0 +1,27 @@
+<svg width="512" height="512" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="background" x1="62" y1="44" x2="450" y2="468" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#1E5B78"/>
+      <stop offset="0.5" stop-color="#143349"/>
+      <stop offset="1" stop-color="#0F172A"/>
+    </linearGradient>
+    <linearGradient id="disk" x1="132" y1="150" x2="380" y2="358" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#F8FAFC"/>
+      <stop offset="0.54" stop-color="#DCE8F3"/>
+      <stop offset="1" stop-color="#94A3B8"/>
+    </linearGradient>
+  </defs>
+  <rect x="32" y="32" width="448" height="448" rx="96" fill="url(#background)"/>
+  <rect x="42" y="42" width="428" height="428" rx="86" fill="none" stroke="#38BDF8" stroke-opacity="0.35" stroke-width="10"/>
+  <path d="M126 178C126 139.34 184.2 108 256 108C327.8 108 386 139.34 386 178V334C386 372.66 327.8 404 256 404C184.2 404 126 372.66 126 334V178Z" fill="url(#disk)"/>
+  <ellipse cx="256" cy="178" rx="130" ry="70" fill="#F8FAFC"/>
+  <ellipse cx="256" cy="178" rx="86" ry="42" fill="#CBD5E1"/>
+  <path d="M126 178C126 216.66 184.2 248 256 248C327.8 248 386 216.66 386 178" fill="none" stroke="#64748B" stroke-width="12"/>
+  <path d="M126 334C126 372.66 184.2 404 256 404C327.8 404 386 372.66 386 334" fill="none" stroke="#64748B" stroke-width="12"/>
+  <path d="M256 248V398" stroke="#94A3B8" stroke-width="10" stroke-linecap="round"/>
+  <path d="M166 244H326" stroke="#22D3EE" stroke-width="34" stroke-linecap="round"/>
+  <path d="M324 214L374 244L324 274Z" fill="#22D3EE"/>
+  <path d="M346 302H186" stroke="#4ADE80" stroke-width="34" stroke-linecap="round"/>
+  <path d="M188 272L138 302L188 332Z" fill="#4ADE80"/>
+  <circle cx="256" cy="178" r="18" fill="#0F172A" opacity="0.48"/>
+</svg>
