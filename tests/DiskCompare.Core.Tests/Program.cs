@@ -1,3 +1,4 @@
+using DiskCompare.Core;
 using DiskCompare.Core.Comparison;
 using DiskCompare.Core.Snapshots;
 
@@ -10,6 +11,7 @@ var tests = new (string Name, Action Run)[]
     ("Snapshot store rejects unsafe input paths", SnapshotStoreRejectsUnsafeInputPaths),
     ("Snapshot store rejects invalid loaded entries", SnapshotStoreRejectsInvalidLoadedEntries),
     ("Snapshot store rejects oversized compressed files", SnapshotStoreRejectsOversizedCompressedFiles),
+    ("Default data paths stay under application root", DefaultDataPathsStayUnderApplicationRoot),
     ("Snapshot comparer handles mixed separators without parent split", SnapshotComparerHandlesMixedSeparators),
     ("Snapshot comparer uses folder aggregates when present", SnapshotComparerUsesFolderAggregatesWhenPresent),
     ("Snapshot comparer mixes legacy files and folder aggregates", SnapshotComparerMixesLegacyFilesAndFolderAggregates),
@@ -203,6 +205,16 @@ static void SnapshotStoreRejectsOversizedCompressedFiles()
     {
         DeleteOwnedTempDirectory(tempRoot);
     }
+}
+
+static void DefaultDataPathsStayUnderApplicationRoot()
+{
+    var applicationRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(AppContext.BaseDirectory));
+
+    AssertEqual(applicationRoot, DiskCompareDataPaths.GetApplicationRootDirectory(), "Application data root");
+    AssertEqual(Path.Combine(applicationRoot, "Snapshots"), new SnapshotStore().GetDefaultSnapshotDirectory(), "Default snapshot directory");
+    AssertEqual(Path.Combine(applicationRoot, "IndexCache"), DiskCompareDataPaths.GetIndexCacheDirectory(), "Default index cache directory");
+    AssertEqual(Path.Combine(applicationRoot, "Updates"), DiskCompareDataPaths.GetUpdateDirectory(), "Default update directory");
 }
 
 static void SnapshotComparerHandlesMixedSeparators()

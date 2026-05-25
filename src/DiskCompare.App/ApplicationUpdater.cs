@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Net.Http;
 using System.Text;
+using DiskCompare.Core;
 
 namespace DiskCompare.App;
 
@@ -45,7 +46,7 @@ public sealed class ApplicationUpdater
     {
         var kind = GetPackageKind(asset)
             ?? throw new InvalidOperationException($"不支持的更新文件类型: {asset.Name}");
-        var updateDirectory = Path.Combine(Path.GetTempPath(), "DiskCompare", "Updates", Guid.NewGuid().ToString("N"));
+        var updateDirectory = Path.Combine(DiskCompareDataPaths.GetUpdateDirectory(), Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(updateDirectory);
 
         var packagePath = Path.Combine(updateDirectory, GetSafeFileName(asset.Name));

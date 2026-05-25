@@ -9,10 +9,10 @@
 - 快速索引不可用时，目录扫描只调用 `DirectoryInfo.EnumerateDirectories`、`DirectoryInfo.EnumerateFiles` 和 `FileInfo` 属性读取，不打开文件内容，不写入被扫描盘。
 - 跳过重解析点，避免进入 junction、symlink 等可能指向盘外或形成循环的路径。
 - 无权限、路径过长、IO 异常等被记录为扫描错误并跳过，不尝试修复或修改文件权限。
-- 快照保存只允许写入 `SnapshotStore` 管理的快照目录，默认是 `%LOCALAPPDATA%\DiskCompare\Snapshots`。
+- 快照保存只允许写入 `SnapshotStore` 管理的快照目录，默认是程序安装/运行目录下的 `Snapshots`。
 - 快照文件必须使用 `.dcsnap` 扩展名，并使用 `FileMode.CreateNew` 创建，拒绝覆盖已有文件。
 - 快照加载会限制压缩文件大小、解压读取上限、JSON 深度和快照条目数量，避免恶意 `.dcsnap` 造成无限解压或超大对象分配。
-- NTFS 索引缓存只允许写入 `%LOCALAPPDATA%\DiskCompare\IndexCache`，缓存文件使用唯一文件名和 `FileMode.CreateNew` 创建，不覆盖已有缓存文件。
+- NTFS 索引缓存只允许写入程序安装/运行目录下的 `IndexCache`，缓存文件使用唯一文件名和 `FileMode.CreateNew` 创建，不覆盖已有缓存文件。
 - NTFS 索引缓存加载会限制缓存文件大小、记录数、单记录名称数和字符串长度；异常缓存会被忽略并回退完整 MFT。
 - NTFS 索引缓存每个卷只保留最近 3 个普通缓存文件，清理前会确认目标仍在缓存目录且不是重解析点。
 - NTFS 索引缓存读写前会拒绝缓存目录或缓存文件是重解析点，避免通过 junction、symlink 等指向意外位置。
@@ -27,11 +27,12 @@
 - `NtfsMftSnapshotProvider` 会只读打开原始卷设备并顺序读取 NTFS 元数据。风险：通常需要管理员权限或卷读取权限；读取量集中在 MFT，速度快但会产生磁盘读取负载。
 - `NtfsMftSnapshotProvider` 会读取 USN Journal 增量记录。风险：通常需要管理员权限或卷读取权限；如果 Journal 被清理、断档或 ID 变化，应用会放弃增量缓存并回退完整 MFT。
 - NTFS MFT 解析代码只支持本地盘符形式的 NTFS 卷。风险：非常规 NTFS、损坏卷、加密/过滤驱动卷可能解析失败；应用会回退到目录扫描。
-- `NtfsIndexCacheStore.Save` 会在 `%LOCALAPPDATA%\DiskCompare\IndexCache` 创建 `.ntfsindex` 缓存文件，并清理同卷旧缓存。风险：清理会删除应用缓存目录中的旧 `.ntfsindex` 普通文件；不会删除用户选择磁盘中的文件。
+- `NtfsIndexCacheStore.Save` 会在程序安装/运行目录下的 `IndexCache` 创建 `.ntfsindex` 缓存文件，并清理同卷旧缓存。风险：清理会删除应用缓存目录中的旧 `.ntfsindex` 普通文件；不会删除用户选择磁盘中的文件。
 - `SnapshotBuilder` 会遍历所选盘符的目录元数据。风险：大盘扫描会产生磁盘读取负载，可能让机械硬盘或网络盘变慢；不会写入或删除文件。
 - `SnapshotBuilder` 读取 `FileInfo.Length` 和 `LastWriteTimeUtc`。风险：某些文件系统配置可能因为访问元数据而更新最后访问时间，某些特殊文件系统驱动也可能在读取元数据时触发自身行为；应用代码不写入文件内容、不改时间戳、不改属性。
 - `SnapshotStore.SaveAsync` 会在快照目录创建 `.dcsnap` 文件。风险：会占用用户本机空间；已限制到快照目录且拒绝覆盖。
-- `MainWindow.OpenSnapshotFolder_Click` 会创建快照目录并用系统 shell 打开它。风险：会创建 `%LOCALAPPDATA%\DiskCompare\Snapshots` 目录；不会修改其他文件。
+- `MainWindow.OpenSnapshotFolder_Click` 会创建快照目录并用系统 shell 打开它。风险：会创建程序安装/运行目录下的 `Snapshots` 目录；不会修改其他文件。
+- `ApplicationUpdater.DownloadAsync` 会在程序安装/运行目录下的 `Updates` 创建更新暂存目录，下载 Release 资产和便携版替换脚本。风险：会占用本机空间；自动更新只写入应用目录中的 `Updates` 和当前应用可执行文件。
 - `OpenFileDialog` 可读取用户选择的 `.dcsnap`。风险：恶意或损坏的快照文件可能导致加载失败或内存占用较高；加载逻辑只读，不写入该文件。
 - 路径校验和文件创建之间仍存在本机其他进程恶意替换目录的 TOCTOU 风险。当前实现会在创建快照/缓存目录前后检查重解析点，写入前后复查目录或文件，并使用 `FileMode.CreateNew` 拒绝覆盖，但没有使用底层 Win32 句柄锁定目录。
 - 如果底层磁盘、文件系统过滤驱动、杀毒软件或同步软件对“读取元数据”有副作用，应用无法完全控制这些外部组件；本应用自身不发起文件内容写入、覆盖、移动或删除。

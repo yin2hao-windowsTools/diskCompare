@@ -1,5 +1,6 @@
 using System.IO.Compression;
 using System.Text.Json;
+using DiskCompare.Core;
 
 namespace DiskCompare.Core.Snapshots;
 
@@ -253,8 +254,7 @@ public sealed class SnapshotStore
 
     private static string GetDefaultSnapshotDirectoryCore()
     {
-        var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-        return Path.Combine(localAppData, "DiskCompare", "Snapshots");
+        return DiskCompareDataPaths.GetSnapshotDirectory();
     }
 
     private static string NormalizeDirectory(string? path)

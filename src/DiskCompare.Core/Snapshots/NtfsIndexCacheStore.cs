@@ -1,3 +1,5 @@
+using DiskCompare.Core;
+
 namespace DiskCompare.Core.Snapshots;
 
 internal sealed class NtfsIndexCacheStore
@@ -308,8 +310,7 @@ internal sealed class NtfsIndexCacheStore
 
     private static string GetDefaultCacheDirectoryCore()
     {
-        var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-        return Path.Combine(localAppData, "DiskCompare", "IndexCache");
+        return DiskCompareDataPaths.GetIndexCacheDirectory();
     }
 
     private static string NormalizeDirectory(string? path)
