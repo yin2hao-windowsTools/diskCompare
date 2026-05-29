@@ -43,7 +43,8 @@ function Resolve-InRepoPath {
 }
 
 $artifactsRoot = Resolve-InRepoPath $OutputRoot
-$publishDir = Join-Path $artifactsRoot "publish\$Runtime"
+$singleFilePublishDir = Join-Path $artifactsRoot "publish\$Runtime-single"
+$portablePublishDir = Join-Path $artifactsRoot "publish\$Runtime-portable"
 $releaseDir = Join-Path $artifactsRoot "release"
 $releaseNotesPath = Join-Path $artifactsRoot "release-notes.md"
 
@@ -51,7 +52,7 @@ if (Test-Path $artifactsRoot) {
     Remove-Item -LiteralPath $artifactsRoot -Recurse -Force
 }
 
-New-Item -ItemType Directory -Force -Path $publishDir, $releaseDir | Out-Null
+New-Item -ItemType Directory -Force -Path $singleFilePublishDir, $portablePublishDir, $releaseDir | Out-Null
 
 Push-Location $repoRoot
 try {
@@ -62,7 +63,7 @@ try {
         --configuration $Configuration `
         --runtime $Runtime `
         --self-contained true `
-        --output $publishDir `
+        --output $singleFilePublishDir `
         -p:PublishSingleFile=true `
         -p:IncludeNativeLibrariesForSelfExtract=true `
         -p:EnableCompressionInSingleFile=true `
@@ -73,9 +74,27 @@ try {
         -p:FileVersion=$fileVersion `
         -p:InformationalVersion=$displayVersion
 
-    $exeSource = Join-Path $publishDir "DiskCompare.exe"
+    dotnet publish src\DiskCompare.App\DiskCompare.App.csproj `
+        --configuration $Configuration `
+        --runtime $Runtime `
+        --self-contained true `
+        --output $portablePublishDir `
+        -p:PublishSingleFile=false `
+        -p:DebugType=None `
+        -p:DebugSymbols=false `
+        -p:Version=$version `
+        -p:AssemblyVersion=$fileVersion `
+        -p:FileVersion=$fileVersion `
+        -p:InformationalVersion=$displayVersion
+
+    $exeSource = Join-Path $singleFilePublishDir "DiskCompare.exe"
     if (-not (Test-Path $exeSource)) {
         throw "Published executable was not found: $exeSource"
+    }
+
+    $portableExeSource = Join-Path $portablePublishDir "DiskCompare.exe"
+    if (-not (Test-Path $portableExeSource)) {
+        throw "Portable executable was not found: $portableExeSource"
     }
 
     $exeArtifact = Join-Path $releaseDir "DiskCompare-$displayVersion-$Runtime.exe"
@@ -83,12 +102,12 @@ try {
     $msiArtifact = Join-Path $releaseDir "DiskCompare-$displayVersion-$Runtime.msi"
 
     Copy-Item -LiteralPath $exeSource -Destination $exeArtifact
-    Compress-Archive -Path (Join-Path $publishDir "*") -DestinationPath $portableArtifact -Force
+    Compress-Archive -Path (Join-Path $portablePublishDir "*") -DestinationPath $portableArtifact -Force
 
     & $WixPath build installer\DiskCompare.wxs `
         -arch x64 `
         -d "ProductVersion=$version" `
-        -d "PublishDir=$publishDir" `
+        -d "PublishDir=$singleFilePublishDir" `
         -d "IconPath=$(Join-Path $repoRoot "src\DiskCompare.App\Assets\DiskCompare.ico")" `
         -pdbtype none `
         -out $msiArtifact
