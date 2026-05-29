@@ -82,7 +82,7 @@
                             <MenuItem Header="检查更新"
                                       Click="CheckUpdates_Click" />
                             <Separator />
-                            <MenuItem Header="许可证"
+                            <MenuItem Header="开源许可证"
                                       Click="ShowLicense_Click" />
                             <MenuItem Header="关于 DiskCompare"
                                       Click="ShowAbout_Click" />

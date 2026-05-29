@@ -248,8 +248,8 @@ public partial class MainWindow : Window
 
         var result = MessageBox.Show(
             this,
-            "许可证: 当前应用未内置 LICENSE 文件。\n\n请访问 GitHub 仓库确认最新许可证说明，或联系开发者获取授权信息。\n\n是否打开 GitHub 仓库？",
-            "许可证",
+            "开源许可证: 当前应用未内置 LICENSE 文件。\n\n请访问 GitHub 仓库确认最新许可证说明，或联系开发者获取授权信息。\n\n是否打开 GitHub 仓库？",
+            "开源许可证",
             MessageBoxButton.YesNo,
             MessageBoxImage.Information);
         if (result == MessageBoxResult.Yes)
@@ -278,7 +278,7 @@ public partial class MainWindow : Window
         var window = new Window
         {
             Owner = this,
-            Title = "许可证",
+            Title = "开源许可证",
             Width = 860,
             Height = 680,
             MinWidth = 640,
