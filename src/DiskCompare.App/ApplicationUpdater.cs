@@ -12,6 +12,7 @@ public sealed class ApplicationUpdater
 
     public ReleaseAsset? SelectPreferredAsset(ReleaseInfo release)
     {
+        var portableArchive = release.Assets.FirstOrDefault(IsPortableArchiveAsset);
         var executable = release.Assets.FirstOrDefault(IsPortableExecutableAsset);
         var installer = release.Assets.FirstOrDefault(IsMsiInstallerAsset);
 
@@ -20,7 +21,7 @@ public sealed class ApplicationUpdater
             return installer;
         }
 
-        return executable ?? installer;
+        return portableArchive ?? executable ?? installer;
     }
 
     public static UpdatePackageKind? GetPackageKind(ReleaseAsset asset)
@@ -34,6 +35,11 @@ public sealed class ApplicationUpdater
         if (extension.Equals(".msi", StringComparison.OrdinalIgnoreCase))
         {
             return UpdatePackageKind.MsiInstaller;
+        }
+
+        if (extension.Equals(".zip", StringComparison.OrdinalIgnoreCase))
+        {
+            return UpdatePackageKind.PortableArchive;
         }
 
         return null;
@@ -86,7 +92,20 @@ public sealed class ApplicationUpdater
             return;
         }
 
-        StartPortableReplacement(package.FilePath);
+        if (package.Kind == UpdatePackageKind.PortableArchive)
+        {
+            StartPortableArchiveReplacement(package.FilePath);
+            return;
+        }
+
+        StartPortableExecutableReplacement(package.FilePath);
+    }
+
+    private static bool IsPortableArchiveAsset(ReleaseAsset asset)
+    {
+        return GetPackageKind(asset) == UpdatePackageKind.PortableArchive
+            && asset.Name.Contains("DiskCompare", StringComparison.OrdinalIgnoreCase)
+            && asset.Name.Contains("portable", StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool IsPortableExecutableAsset(ReleaseAsset asset)
@@ -157,7 +176,7 @@ public sealed class ApplicationUpdater
         });
     }
 
-    private static void StartPortableReplacement(string packagePath)
+    private static void StartPortableExecutableReplacement(string packagePath)
     {
         var currentPath = Environment.ProcessPath;
         if (string.IsNullOrWhiteSpace(currentPath) || !File.Exists(currentPath))
@@ -172,29 +191,55 @@ public sealed class ApplicationUpdater
 
         var updateDirectory = Path.GetDirectoryName(packagePath)
             ?? throw new InvalidOperationException("无法确定更新文件目录。");
+        StartPortableReplacement(packagePath, currentPath, updateDirectory, GetPortableExecutableReplacementScript());
+    }
+
+    private static void StartPortableArchiveReplacement(string packagePath)
+    {
+        var currentPath = Environment.ProcessPath;
+        if (string.IsNullOrWhiteSpace(currentPath) || !File.Exists(currentPath))
+        {
+            throw new InvalidOperationException("无法确定当前程序路径，不能自动覆盖安装。");
+        }
+
+        var updateDirectory = Path.GetDirectoryName(packagePath)
+            ?? throw new InvalidOperationException("无法确定更新文件目录。");
+        StartPortableReplacement(packagePath, currentPath, updateDirectory, GetPortableArchiveReplacementScript());
+    }
+
+    private static void StartPortableReplacement(string packagePath, string currentPath, string updateDirectory, string script)
+    {
         var scriptPath = Path.Combine(updateDirectory, "Apply-DiskCompareUpdate.ps1");
         var logPath = Path.Combine(updateDirectory, "update-error.log");
-        File.WriteAllText(scriptPath, GetPortableReplacementScript(), Encoding.UTF8);
+        File.WriteAllText(scriptPath, script, Encoding.UTF8);
 
-        var arguments =
-            $"-NoProfile -ExecutionPolicy Bypass -File {QuotePowerShellArgument(scriptPath)} " +
-            $"-ProcessId {Environment.ProcessId} " +
-            $"-SourcePath {QuotePowerShellArgument(packagePath)} " +
-            $"-TargetPath {QuotePowerShellArgument(currentPath)} " +
-            $"-RestartPath {QuotePowerShellArgument(currentPath)} " +
-            $"-LogPath {QuotePowerShellArgument(logPath)}";
-
-        Process.Start(new ProcessStartInfo
+        var startInfo = new ProcessStartInfo
         {
             FileName = "powershell.exe",
-            Arguments = arguments,
             UseShellExecute = false,
             CreateNoWindow = true,
             WindowStyle = ProcessWindowStyle.Hidden
-        });
+        };
+        startInfo.ArgumentList.Add("-NoProfile");
+        startInfo.ArgumentList.Add("-ExecutionPolicy");
+        startInfo.ArgumentList.Add("Bypass");
+        startInfo.ArgumentList.Add("-File");
+        startInfo.ArgumentList.Add(scriptPath);
+        startInfo.ArgumentList.Add("-ProcessId");
+        startInfo.ArgumentList.Add(Environment.ProcessId.ToString());
+        startInfo.ArgumentList.Add("-SourcePath");
+        startInfo.ArgumentList.Add(packagePath);
+        startInfo.ArgumentList.Add("-TargetPath");
+        startInfo.ArgumentList.Add(currentPath);
+        startInfo.ArgumentList.Add("-RestartPath");
+        startInfo.ArgumentList.Add(currentPath);
+        startInfo.ArgumentList.Add("-LogPath");
+        startInfo.ArgumentList.Add(logPath);
+
+        Process.Start(startInfo);
     }
 
-    private static string GetPortableReplacementScript()
+    private static string GetPortableExecutableReplacementScript()
     {
         return """
 param(
@@ -233,21 +278,79 @@ catch {
 """;
     }
 
+    private static string GetPortableArchiveReplacementScript()
+    {
+        return """
+param(
+    [Parameter(Mandatory = $true)]
+    [int]$ProcessId,
+
+    [Parameter(Mandatory = $true)]
+    [string]$SourcePath,
+
+    [Parameter(Mandatory = $true)]
+    [string]$TargetPath,
+
+    [Parameter(Mandatory = $true)]
+    [string]$RestartPath,
+
+    [Parameter(Mandatory = $true)]
+    [string]$LogPath
+)
+
+$ErrorActionPreference = 'Stop'
+
+try {
+    $process = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
+    if ($null -ne $process) {
+        Wait-Process -Id $ProcessId -Timeout 120 -ErrorAction SilentlyContinue
+    }
+
+    $targetDirectory = Split-Path -Parent $TargetPath
+    $extractDirectory = Join-Path (Split-Path -Parent $SourcePath) 'expanded'
+    if (Test-Path -LiteralPath $extractDirectory) {
+        Remove-Item -LiteralPath $extractDirectory -Recurse -Force
+    }
+
+    New-Item -ItemType Directory -Force -Path $extractDirectory | Out-Null
+    Expand-Archive -LiteralPath $SourcePath -DestinationPath $extractDirectory -Force
+
+    $sourceRoot = $extractDirectory
+    $children = @(Get-ChildItem -LiteralPath $extractDirectory -Force)
+    if ($children.Count -eq 1 -and $children[0].PSIsContainer) {
+        $sourceRoot = $children[0].FullName
+    }
+
+    $updatedExecutable = Join-Path $sourceRoot (Split-Path -Leaf $TargetPath)
+    if (-not (Test-Path -LiteralPath $updatedExecutable -PathType Leaf)) {
+        throw "Portable archive does not contain $(Split-Path -Leaf $TargetPath)."
+    }
+
+    foreach ($item in Get-ChildItem -LiteralPath $sourceRoot -Force) {
+        Copy-Item -LiteralPath $item.FullName -Destination $targetDirectory -Recurse -Force
+    }
+
+    Unblock-File -LiteralPath $RestartPath -ErrorAction SilentlyContinue
+    Start-Process -FilePath $RestartPath
+}
+catch {
+    $_ | Out-String | Set-Content -LiteralPath $LogPath -Encoding UTF8
+    Start-Process -FilePath $SourcePath
+}
+""";
+    }
+
     private static string QuoteCommandLineArgument(string value)
     {
         return "\"" + value.Replace("\"", "\\\"") + "\"";
-    }
-
-    private static string QuotePowerShellArgument(string value)
-    {
-        return "'" + value.Replace("'", "''") + "'";
     }
 }
 
 public enum UpdatePackageKind
 {
     PortableExecutable,
-    MsiInstaller
+    MsiInstaller,
+    PortableArchive
 }
 
 public sealed record UpdateDownloadProgress(long ReceivedBytes, long TotalBytes);

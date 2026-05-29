@@ -273,9 +273,12 @@ public partial class MainWindow : Window
         }
 
         var packageKind = ApplicationUpdater.GetPackageKind(asset);
-        var actionText = packageKind == UpdatePackageKind.MsiInstaller
-            ? "下载完成后会启动安装程序并退出 DiskCompare。"
-            : "下载完成后会退出 DiskCompare，覆盖当前程序文件并重启。";
+        var actionText = packageKind switch
+        {
+            UpdatePackageKind.MsiInstaller => "下载完成后会启动安装程序并退出 DiskCompare。",
+            UpdatePackageKind.PortableArchive => "下载完成后会退出 DiskCompare，解压 portable 包覆盖当前程序目录并重启。",
+            _ => "下载完成后会退出 DiskCompare，覆盖当前程序文件并重启。"
+        };
         var result = MessageBox.Show(
             this,
             $"当前版本: {currentDisplayVersion}\n最新版本: {latestRelease.Name} ({latestRelease.TagName})\n\n{actionText}\n\n更新文件: {asset.Name}\n是否下载并自动更新？",
@@ -303,7 +306,12 @@ public partial class MainWindow : Window
         StatusTextBlock.Text = "更新已下载";
         ProgressTextBlock.Text = $"更新已下载: {Path.GetFileName(package.FilePath)}";
 
-        var packageKind = package.Kind == UpdatePackageKind.MsiInstaller ? "启动安装程序" : "覆盖当前程序并重启";
+        var packageKind = package.Kind switch
+        {
+            UpdatePackageKind.MsiInstaller => "启动安装程序",
+            UpdatePackageKind.PortableArchive => "解压 portable 包、覆盖当前程序目录并重启",
+            _ => "覆盖当前程序并重启"
+        };
         var result = MessageBox.Show(
             this,
             $"更新文件已下载完成。\n\n下一步将{packageKind}，当前程序会退出。\n是否继续？",

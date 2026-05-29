@@ -1,3 +1,4 @@
+using DiskCompare.App;
 using DiskCompare.Core;
 using DiskCompare.Core.Comparison;
 using DiskCompare.Core.Snapshots;
@@ -15,6 +16,8 @@ var tests = new (string Name, Action Run)[]
     ("Snapshot comparer handles mixed separators without parent split", SnapshotComparerHandlesMixedSeparators),
     ("Snapshot comparer uses folder aggregates when present", SnapshotComparerUsesFolderAggregatesWhenPresent),
     ("Snapshot comparer mixes legacy files and folder aggregates", SnapshotComparerMixesLegacyFilesAndFolderAggregates),
+    ("Application updater prefers portable archive outside Program Files", ApplicationUpdaterPrefersPortableArchiveOutsideProgramFiles),
+    ("Application updater recognizes portable archive package", ApplicationUpdaterRecognizesPortableArchivePackage),
     ("NTFS index cache stores unique files and loads newest USN", NtfsIndexCacheStoresUniqueFilesAndLoadsNewestUsn),
     ("NTFS index cache ignores malicious counts", NtfsIndexCacheIgnoresMaliciousCounts)
 };
@@ -301,6 +304,32 @@ static void SnapshotComparerMixesLegacyFilesAndFolderAggregates()
     var comparison = new SnapshotComparer().Compare(before, now);
     AssertEqual(50, comparison.DeltaBytes, "Mixed root delta");
     AssertEqual(50, Find(Find(comparison.Root, "Media"), "Video").DeltaBytes, "Mixed video delta");
+}
+
+static void ApplicationUpdaterPrefersPortableArchiveOutsideProgramFiles()
+{
+    var release = new ReleaseInfo(
+        "v1.2.3",
+        "DiskCompare v1.2.3",
+        new Uri("https://example.test/releases/v1.2.3"),
+        new Version(1, 2, 3),
+        [
+            new ReleaseAsset("DiskCompare-v1.2.3-win-x64.exe", new Uri("https://example.test/app.exe"), 1),
+            new ReleaseAsset("DiskCompare-v1.2.3-win-x64.msi", new Uri("https://example.test/app.msi"), 1),
+            new ReleaseAsset("DiskCompare-v1.2.3-win-x64-portable.zip", new Uri("https://example.test/app.zip"), 1)
+        ]);
+
+    var selected = new ApplicationUpdater().SelectPreferredAsset(release)
+        ?? throw new InvalidOperationException("Expected updater to select an asset.");
+
+    AssertEqual("DiskCompare-v1.2.3-win-x64-portable.zip", selected.Name, "Portable asset");
+}
+
+static void ApplicationUpdaterRecognizesPortableArchivePackage()
+{
+    var asset = new ReleaseAsset("DiskCompare-v1.2.3-win-x64-portable.zip", new Uri("https://example.test/app.zip"), 1);
+
+    AssertEqual(UpdatePackageKind.PortableArchive, ApplicationUpdater.GetPackageKind(asset), "Portable archive package kind");
 }
 
 static void NtfsIndexCacheStoresUniqueFilesAndLoadsNewestUsn()
