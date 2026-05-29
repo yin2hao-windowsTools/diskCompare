@@ -66,6 +66,7 @@ project.fragment.lock.json
 artifacts/
 .artifacts/
 .tools/
+.wix/
 
 # Tye
 .tye/

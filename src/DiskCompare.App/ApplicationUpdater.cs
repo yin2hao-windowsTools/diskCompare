@@ -13,7 +13,7 @@ public sealed class ApplicationUpdater
     public ReleaseAsset? SelectPreferredAsset(ReleaseInfo release)
     {
         var portableArchive = release.Assets.FirstOrDefault(IsPortableArchiveAsset);
-        var executable = release.Assets.FirstOrDefault(IsPortableExecutableAsset);
+        var executableInstaller = release.Assets.FirstOrDefault(IsExecutableInstallerAsset);
         var installer = release.Assets.FirstOrDefault(IsMsiInstallerAsset);
 
         if (IsCurrentExecutableUnderProgramFiles() && installer is not null)
@@ -21,7 +21,7 @@ public sealed class ApplicationUpdater
             return installer;
         }
 
-        return portableArchive ?? executable ?? installer;
+        return portableArchive ?? executableInstaller ?? installer;
     }
 
     public static UpdatePackageKind? GetPackageKind(ReleaseAsset asset)
@@ -29,7 +29,7 @@ public sealed class ApplicationUpdater
         var extension = Path.GetExtension(asset.Name);
         if (extension.Equals(".exe", StringComparison.OrdinalIgnoreCase))
         {
-            return UpdatePackageKind.PortableExecutable;
+            return UpdatePackageKind.ExecutableInstaller;
         }
 
         if (extension.Equals(".msi", StringComparison.OrdinalIgnoreCase))
@@ -92,13 +92,19 @@ public sealed class ApplicationUpdater
             return;
         }
 
+        if (package.Kind == UpdatePackageKind.ExecutableInstaller)
+        {
+            StartExecutableInstaller(package.FilePath);
+            return;
+        }
+
         if (package.Kind == UpdatePackageKind.PortableArchive)
         {
             StartPortableArchiveReplacement(package.FilePath);
             return;
         }
 
-        StartPortableExecutableReplacement(package.FilePath);
+        throw new InvalidOperationException($"不支持的更新文件类型: {package.Asset.Name}");
     }
 
     private static bool IsPortableArchiveAsset(ReleaseAsset asset)
@@ -108,9 +114,9 @@ public sealed class ApplicationUpdater
             && asset.Name.Contains("portable", StringComparison.OrdinalIgnoreCase);
     }
 
-    private static bool IsPortableExecutableAsset(ReleaseAsset asset)
+    private static bool IsExecutableInstallerAsset(ReleaseAsset asset)
     {
-        return GetPackageKind(asset) == UpdatePackageKind.PortableExecutable
+        return GetPackageKind(asset) == UpdatePackageKind.ExecutableInstaller
             && asset.Name.Contains("DiskCompare", StringComparison.OrdinalIgnoreCase);
     }
 
@@ -176,22 +182,13 @@ public sealed class ApplicationUpdater
         });
     }
 
-    private static void StartPortableExecutableReplacement(string packagePath)
+    private static void StartExecutableInstaller(string packagePath)
     {
-        var currentPath = Environment.ProcessPath;
-        if (string.IsNullOrWhiteSpace(currentPath) || !File.Exists(currentPath))
+        Process.Start(new ProcessStartInfo
         {
-            throw new InvalidOperationException("无法确定当前程序路径，不能自动覆盖安装。");
-        }
-
-        if (!Path.GetExtension(currentPath).Equals(".exe", StringComparison.OrdinalIgnoreCase))
-        {
-            throw new InvalidOperationException("当前运行方式不是可覆盖的 exe，请从 Release 页面手动下载更新。");
-        }
-
-        var updateDirectory = Path.GetDirectoryName(packagePath)
-            ?? throw new InvalidOperationException("无法确定更新文件目录。");
-        StartPortableReplacement(packagePath, currentPath, updateDirectory, GetPortableExecutableReplacementScript());
+            FileName = packagePath,
+            UseShellExecute = true
+        });
     }
 
     private static void StartPortableArchiveReplacement(string packagePath)
@@ -237,45 +234,6 @@ public sealed class ApplicationUpdater
         startInfo.ArgumentList.Add(logPath);
 
         Process.Start(startInfo);
-    }
-
-    private static string GetPortableExecutableReplacementScript()
-    {
-        return """
-param(
-    [Parameter(Mandatory = $true)]
-    [int]$ProcessId,
-
-    [Parameter(Mandatory = $true)]
-    [string]$SourcePath,
-
-    [Parameter(Mandatory = $true)]
-    [string]$TargetPath,
-
-    [Parameter(Mandatory = $true)]
-    [string]$RestartPath,
-
-    [Parameter(Mandatory = $true)]
-    [string]$LogPath
-)
-
-$ErrorActionPreference = 'Stop'
-
-try {
-    $process = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
-    if ($null -ne $process) {
-        Wait-Process -Id $ProcessId -Timeout 120 -ErrorAction SilentlyContinue
-    }
-
-    Copy-Item -LiteralPath $SourcePath -Destination $TargetPath -Force
-    Unblock-File -LiteralPath $TargetPath -ErrorAction SilentlyContinue
-    Start-Process -FilePath $RestartPath
-}
-catch {
-    $_ | Out-String | Set-Content -LiteralPath $LogPath -Encoding UTF8
-    Start-Process -FilePath $SourcePath
-}
-""";
     }
 
     private static string GetPortableArchiveReplacementScript()
@@ -348,7 +306,7 @@ catch {
 
 public enum UpdatePackageKind
 {
-    PortableExecutable,
+    ExecutableInstaller,
     MsiInstaller,
     PortableArchive
 }

@@ -275,6 +275,7 @@ public partial class MainWindow : Window
         var packageKind = ApplicationUpdater.GetPackageKind(asset);
         var actionText = packageKind switch
         {
+            UpdatePackageKind.ExecutableInstaller => "下载完成后会启动 EXE 安装包并退出 DiskCompare。",
             UpdatePackageKind.MsiInstaller => "下载完成后会启动安装程序并退出 DiskCompare。",
             UpdatePackageKind.PortableArchive => "下载完成后会退出 DiskCompare，解压 portable 包覆盖当前程序目录并重启。",
             _ => "下载完成后会退出 DiskCompare，覆盖当前程序文件并重启。"
@@ -308,6 +309,7 @@ public partial class MainWindow : Window
 
         var packageKind = package.Kind switch
         {
+            UpdatePackageKind.ExecutableInstaller => "启动 EXE 安装包",
             UpdatePackageKind.MsiInstaller => "启动安装程序",
             UpdatePackageKind.PortableArchive => "解压 portable 包、覆盖当前程序目录并重启",
             _ => "覆盖当前程序并重启"

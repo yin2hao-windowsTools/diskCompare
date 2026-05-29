@@ -152,7 +152,7 @@ $content.Add("## 发行版")
 $content.Add("")
 $content.Add("| 平台 | 类型 | 文件 | 快速链接 |")
 $content.Add("| --- | --- | --- | --- |")
-Add-ReleaseAssetRow -Content $content -RepositoryUrl $repositoryUrl -TagName $CurrentTag -Platform "Windows" -Type "standalone EXE" -FileName $exeFileName
+Add-ReleaseAssetRow -Content $content -RepositoryUrl $repositoryUrl -TagName $CurrentTag -Platform "Windows" -Type "EXE installer" -FileName $exeFileName
 Add-ReleaseAssetRow -Content $content -RepositoryUrl $repositoryUrl -TagName $CurrentTag -Platform "Windows" -Type "MSI installer" -FileName $msiFileName
 Add-ReleaseAssetRow -Content $content -RepositoryUrl $repositoryUrl -TagName $CurrentTag -Platform "Windows" -Type "portable ZIP" -FileName $portableFileName
 

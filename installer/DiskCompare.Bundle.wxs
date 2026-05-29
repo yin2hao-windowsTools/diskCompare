@@ -1,0 +1,22 @@
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:bal="http://wixtoolset.org/schemas/v4/wxs/bal">
+  <Bundle
+    Name="DiskCompare"
+    Manufacturer="DiskCompare"
+    Version="$(var.ProductVersion)"
+    UpgradeCode="8f91808d-4054-4885-a3ba-8dacb82e2abc"
+    IconSourceFile="$(var.IconPath)">
+
+    <BootstrapperApplication>
+      <bal:WixStandardBootstrapperApplication
+        Theme="hyperlinkLicense"
+        LicenseUrl="https://github.com/yin2hao-windowsTools/diskCompare" />
+    </BootstrapperApplication>
+
+    <Chain>
+      <MsiPackage
+        SourceFile="$(var.MsiPath)"
+        bal:DisplayInternalUICondition="1" />
+    </Chain>
+  </Bundle>
+</Wix>

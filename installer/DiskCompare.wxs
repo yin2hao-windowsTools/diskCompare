@@ -1,4 +1,7 @@
-<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
+  <?include $(var.GeneratedFilesWxi) ?>
+
   <Package
     Name="DiskCompare"
     Manufacturer="DiskCompare"
@@ -10,18 +13,15 @@
     <MediaTemplate EmbedCab="yes" />
     <Icon Id="DiskCompareIcon" SourceFile="$(var.IconPath)" />
     <Property Id="ARPPRODUCTICON" Value="DiskCompareIcon" />
+    <ui:WixUI Id="WixUI_InstallDir" InstallDirectory="INSTALLFOLDER" />
 
     <Feature Id="MainFeature" Title="DiskCompare" Level="1">
-      <ComponentRef Id="ApplicationExecutable" />
+      <ComponentGroupRef Id="PublishedFiles" />
       <ComponentRef Id="ApplicationShortcut" />
     </Feature>
 
     <StandardDirectory Id="ProgramFiles64Folder">
-      <Directory Id="INSTALLFOLDER" Name="DiskCompare">
-        <Component Id="ApplicationExecutable" Guid="9b9d758a-9587-4d64-9c55-a85b13fc7584">
-          <File Id="DiskCompareExe" Source="$(var.PublishDir)\DiskCompare.exe" KeyPath="yes" />
-        </Component>
-      </Directory>
+      <Directory Id="INSTALLFOLDER" Name="DiskCompare" />
     </StandardDirectory>
 
     <StandardDirectory Id="ProgramMenuFolder">

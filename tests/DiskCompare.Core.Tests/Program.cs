@@ -17,6 +17,7 @@ var tests = new (string Name, Action Run)[]
     ("Snapshot comparer uses folder aggregates when present", SnapshotComparerUsesFolderAggregatesWhenPresent),
     ("Snapshot comparer mixes legacy files and folder aggregates", SnapshotComparerMixesLegacyFilesAndFolderAggregates),
     ("Application updater prefers portable archive outside Program Files", ApplicationUpdaterPrefersPortableArchiveOutsideProgramFiles),
+    ("Application updater recognizes executable installer package", ApplicationUpdaterRecognizesExecutableInstallerPackage),
     ("Application updater recognizes portable archive package", ApplicationUpdaterRecognizesPortableArchivePackage),
     ("NTFS index cache stores unique files and loads newest USN", NtfsIndexCacheStoresUniqueFilesAndLoadsNewestUsn),
     ("NTFS index cache ignores malicious counts", NtfsIndexCacheIgnoresMaliciousCounts)
@@ -330,6 +331,13 @@ static void ApplicationUpdaterRecognizesPortableArchivePackage()
     var asset = new ReleaseAsset("DiskCompare-v1.2.3-win-x64-portable.zip", new Uri("https://example.test/app.zip"), 1);
 
     AssertEqual(UpdatePackageKind.PortableArchive, ApplicationUpdater.GetPackageKind(asset), "Portable archive package kind");
+}
+
+static void ApplicationUpdaterRecognizesExecutableInstallerPackage()
+{
+    var asset = new ReleaseAsset("DiskCompare-v1.2.3-win-x64.exe", new Uri("https://example.test/app.exe"), 1);
+
+    AssertEqual(UpdatePackageKind.ExecutableInstaller, ApplicationUpdater.GetPackageKind(asset), "Executable installer package kind");
 }
 
 static void NtfsIndexCacheStoresUniqueFilesAndLoadsNewestUsn()
