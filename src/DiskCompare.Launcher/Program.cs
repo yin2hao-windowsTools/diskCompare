@@ -10,6 +10,9 @@ internal static class Program
     [STAThread]
     private static int Main(string[] args)
     {
+        Application.EnableVisualStyles();
+        Application.SetCompatibleTextRenderingDefault(false);
+
         var applicationDirectory = AppDomain.CurrentDomain.BaseDirectory;
         var appHostPath = Path.Combine(applicationDirectory, AppHostFileName);
         if (!File.Exists(appHostPath))
@@ -24,19 +27,9 @@ internal static class Program
 
         if (!RuntimeRequirement.IsSatisfied())
         {
-            var result = MessageBox.Show(
-                RuntimeRequirement.GetMissingRuntimeMessage(),
-                "DiskCompare",
-                MessageBoxButtons.YesNo,
-                MessageBoxIcon.Warning);
-
-            if (result == DialogResult.Yes)
+            using (var prompt = new RuntimeDownloadPrompt())
             {
-                Process.Start(new ProcessStartInfo
-                {
-                    FileName = RuntimeRequirement.DownloadPageUrl,
-                    UseShellExecute = true
-                });
+                prompt.ShowDialog();
             }
 
             return 1;
