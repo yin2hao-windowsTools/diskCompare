@@ -2,6 +2,7 @@
   <Folder Name="/src/">
     <Project Path="src/DiskCompare.App/DiskCompare.App.csproj" />
     <Project Path="src/DiskCompare.Core/DiskCompare.Core.csproj" />
+    <Project Path="src/DiskCompare.Launcher/DiskCompare.Launcher.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/DiskCompare.Core.Tests/DiskCompare.Core.Tests.csproj" />

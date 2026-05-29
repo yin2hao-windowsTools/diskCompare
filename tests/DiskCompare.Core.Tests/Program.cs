@@ -2,6 +2,7 @@ using DiskCompare.App;
 using DiskCompare.Core;
 using DiskCompare.Core.Comparison;
 using DiskCompare.Core.Snapshots;
+using DiskCompare.Launcher;
 
 var tests = new (string Name, Action Run)[]
 {
@@ -19,6 +20,8 @@ var tests = new (string Name, Action Run)[]
     ("Application updater prefers portable archive outside Program Files", ApplicationUpdaterPrefersPortableArchiveOutsideProgramFiles),
     ("Application updater recognizes executable installer package", ApplicationUpdaterRecognizesExecutableInstallerPackage),
     ("Application updater recognizes portable archive package", ApplicationUpdaterRecognizesPortableArchivePackage),
+    (".NET launcher detects required desktop runtime major version", RuntimeRequirementDetectsRequiredDesktopRuntimeMajorVersion),
+    (".NET launcher rejects missing desktop runtime major version", RuntimeRequirementRejectsMissingDesktopRuntimeMajorVersion),
     ("NTFS index cache stores unique files and loads newest USN", NtfsIndexCacheStoresUniqueFilesAndLoadsNewestUsn),
     ("NTFS index cache ignores malicious counts", NtfsIndexCacheIgnoresMaliciousCounts)
 };
@@ -340,6 +343,20 @@ static void ApplicationUpdaterRecognizesExecutableInstallerPackage()
     AssertEqual(UpdatePackageKind.ExecutableInstaller, ApplicationUpdater.GetPackageKind(asset), "Executable installer package kind");
 }
 
+static void RuntimeRequirementDetectsRequiredDesktopRuntimeMajorVersion()
+{
+    AssertTrue(
+        RuntimeRequirement.HasWindowsDesktopRuntimeMajorVersion(["7.0.5", "8.0.24", "10.0.1"], RuntimeRequirement.RequiredWindowsDesktopRuntimeMajorVersion),
+        "Required desktop runtime should be detected");
+}
+
+static void RuntimeRequirementRejectsMissingDesktopRuntimeMajorVersion()
+{
+    AssertFalse(
+        RuntimeRequirement.HasWindowsDesktopRuntimeMajorVersion(["6.0.36", "7.0.20", "10.0.1"], RuntimeRequirement.RequiredWindowsDesktopRuntimeMajorVersion),
+        "Missing desktop runtime should be rejected");
+}
+
 static void NtfsIndexCacheStoresUniqueFilesAndLoadsNewestUsn()
 {
     var tempRoot = CreateOwnedTempDirectory();
@@ -449,6 +466,22 @@ static void AssertThrows<TException>(Action action, string label)
     }
 
     throw new InvalidOperationException($"{label}: expected exception {typeof(TException).Name}.");
+}
+
+static void AssertTrue(bool condition, string label)
+{
+    if (!condition)
+    {
+        throw new InvalidOperationException($"{label}: expected true, got false.");
+    }
+}
+
+static void AssertFalse(bool condition, string label)
+{
+    if (condition)
+    {
+        throw new InvalidOperationException($"{label}: expected false, got true.");
+    }
 }
 
 static string CreateOwnedTempDirectory()

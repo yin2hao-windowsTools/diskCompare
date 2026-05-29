@@ -3,6 +3,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\DiskCompare.App\DiskCompare.App.csproj" />
     <ProjectReference Include="..\..\src\DiskCompare.Core\DiskCompare.Core.csproj" />
+    <Compile Include="..\..\src\DiskCompare.Launcher\RuntimeRequirement.cs" Link="RuntimeRequirement.cs" />
   </ItemGroup>
 
   <PropertyGroup>

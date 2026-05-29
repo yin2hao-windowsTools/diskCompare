@@ -7,7 +7,7 @@
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net8.0-windows</TargetFramework>
-    <AssemblyName>DiskCompare</AssemblyName>
+    <AssemblyName>DiskCompare.AppHost</AssemblyName>
     <Product>DiskCompare</Product>
     <Description>Windows disk snapshot comparison tool.</Description>
     <Nullable>enable</Nullable>
