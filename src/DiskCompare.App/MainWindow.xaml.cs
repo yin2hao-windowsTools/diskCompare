@@ -2,8 +2,10 @@ using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
+using System.Reflection;
 using System.Windows;
 using System.Windows.Data;
+using System.Windows.Controls;
 using System.Windows.Media;
 using DiskCompare.Core.Comparison;
 using DiskCompare.Core.Drives;
@@ -238,6 +240,12 @@ public partial class MainWindow : Window
 
     private void ShowLicense_Click(object sender, RoutedEventArgs e)
     {
+        if (TryReadLicenseText(out var licenseText))
+        {
+            ShowLicenseWindow(licenseText);
+            return;
+        }
+
         var result = MessageBox.Show(
             this,
             "许可证: 当前应用未内置 LICENSE 文件。\n\n请访问 GitHub 仓库确认最新许可证说明，或联系开发者获取授权信息。\n\n是否打开 GitHub 仓库？",
@@ -248,6 +256,79 @@ public partial class MainWindow : Window
         {
             OpenExternalUri(ReleaseUpdateService.RepositoryUrl);
         }
+    }
+
+    private static bool TryReadLicenseText(out string text)
+    {
+        var assembly = Assembly.GetExecutingAssembly();
+        using var stream = assembly.GetManifestResourceStream("DiskCompare.App.LICENSE");
+        if (stream is null)
+        {
+            text = string.Empty;
+            return false;
+        }
+
+        using var reader = new StreamReader(stream);
+        text = reader.ReadToEnd().Trim();
+        return !string.IsNullOrWhiteSpace(text);
+    }
+
+    private void ShowLicenseWindow(string licenseText)
+    {
+        var window = new Window
+        {
+            Owner = this,
+            Title = "许可证",
+            Width = 860,
+            Height = 680,
+            MinWidth = 640,
+            MinHeight = 460,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Content = new Grid
+            {
+                Margin = new Thickness(16),
+                RowDefinitions =
+                {
+                    new RowDefinition { Height = new GridLength(1, GridUnitType.Star) },
+                    new RowDefinition { Height = GridLength.Auto }
+                },
+                Children =
+                {
+                    new TextBox
+                    {
+                        Text = licenseText,
+                        IsReadOnly = true,
+                        AcceptsReturn = true,
+                        TextWrapping = TextWrapping.Wrap,
+                        VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+                        HorizontalScrollBarVisibility = ScrollBarVisibility.Auto
+                    },
+                    new StackPanel
+                    {
+                        Orientation = Orientation.Horizontal,
+                        HorizontalAlignment = HorizontalAlignment.Right,
+                        Margin = new Thickness(0, 12, 0, 0),
+                        Children =
+                        {
+                            new Button
+                            {
+                                MinWidth = 90,
+                                Padding = new Thickness(12, 6, 12, 6),
+                                Content = "关闭",
+                                IsCancel = true
+                            }
+                        }
+                    }
+                }
+            }
+        };
+
+        Grid.SetRow(((Grid)window.Content).Children[0], 0);
+        Grid.SetRow(((Grid)window.Content).Children[1], 1);
+
+        var closeButton = (Button)((StackPanel)((Grid)window.Content).Children[1]).Children[0];
+        closeButton.Click += (_, _) => window.Close();
+        window.ShowDialog();
     }
 
     private void ShowAbout_Click(object sender, RoutedEventArgs e)

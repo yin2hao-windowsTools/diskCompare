@@ -20,4 +20,10 @@
     <Resource Include="Assets\DiskCompare.ico" />
   </ItemGroup>
 
+  <ItemGroup>
+    <EmbeddedResource Include="..\..\LICENSE">
+      <LogicalName>DiskCompare.App.LICENSE</LogicalName>
+    </EmbeddedResource>
+  </ItemGroup>
+
 </Project>
