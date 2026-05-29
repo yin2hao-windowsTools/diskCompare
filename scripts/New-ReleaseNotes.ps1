@@ -148,9 +148,9 @@ $msiFileName = "DiskCompare-$displayVersion-$Runtime.msi"
 $portableFileName = "DiskCompare-$displayVersion-$Runtime-portable.zip"
 
 $content.Add("")
-$content.Add("## 发行版")
+$content.Add("## Release Assets")
 $content.Add("")
-$content.Add("| 平台 | 类型 | 文件 | 快速链接 |")
+$content.Add("| Platform | Type | File | Link |")
 $content.Add("| --- | --- | --- | --- |")
 Add-ReleaseAssetRow -Content $content -RepositoryUrl $repositoryUrl -TagName $CurrentTag -Platform "Windows" -Type "EXE installer" -FileName $exeFileName
 Add-ReleaseAssetRow -Content $content -RepositoryUrl $repositoryUrl -TagName $CurrentTag -Platform "Windows" -Type "MSI installer" -FileName $msiFileName

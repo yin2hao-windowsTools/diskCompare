@@ -16,12 +16,46 @@ $version = $versionInfo.Version
 $fileVersion = $versionInfo.FileVersion
 $displayVersion = $versionInfo.DisplayVersion
 
+function Test-EndsInDirectorySeparator {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    if ([string]::IsNullOrEmpty($Path)) {
+        return $false
+    }
+
+    $lastChar = $Path[$Path.Length - 1]
+    return $lastChar -eq [System.IO.Path]::DirectorySeparatorChar -or $lastChar -eq [System.IO.Path]::AltDirectorySeparatorChar
+}
+
+function Get-RelativePathCompat {
+    param(
+        [Parameter(Mandatory = $true)][string]$BasePath,
+        [Parameter(Mandatory = $true)][string]$TargetPath
+    )
+
+    $baseFullPath = [System.IO.Path]::GetFullPath($BasePath)
+    if (-not (Test-EndsInDirectorySeparator $baseFullPath)) {
+        $baseFullPath += [System.IO.Path]::DirectorySeparatorChar
+    }
+
+    $targetFullPath = [System.IO.Path]::GetFullPath($TargetPath)
+    $baseUri = New-Object System.Uri($baseFullPath)
+    $targetUri = New-Object System.Uri($targetFullPath)
+    $relativeUri = $baseUri.MakeRelativeUri($targetUri)
+    $relativePath = [System.Uri]::UnescapeDataString($relativeUri.ToString()).Replace('/', [System.IO.Path]::DirectorySeparatorChar)
+    if ([string]::IsNullOrEmpty($relativePath)) {
+        return "."
+    }
+
+    return $relativePath
+}
+
 function Resolve-InRepoPath {
     param([Parameter(Mandatory = $true)][string]$Path)
 
     $fullPath = [System.IO.Path]::GetFullPath((Join-Path $repoRoot $Path))
     $repoFullPath = [System.IO.Path]::GetFullPath($repoRoot)
-    $repoWithSeparator = if ([System.IO.Path]::EndsInDirectorySeparator($repoFullPath)) {
+    $repoWithSeparator = if (Test-EndsInDirectorySeparator $repoFullPath) {
         $repoFullPath
     }
     else {
@@ -51,7 +85,13 @@ function ConvertTo-WixIdentifier {
         [string]$Value
     )
 
-    $hashBytes = [System.Security.Cryptography.SHA256]::HashData([System.Text.Encoding]::UTF8.GetBytes($Value))
+    $sha256 = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $hashBytes = $sha256.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($Value))
+    }
+    finally {
+        $sha256.Dispose()
+    }
     $hash = [System.BitConverter]::ToString($hashBytes).Replace("-", "").Substring(0, 12).ToLowerInvariant()
     $name = [System.Text.RegularExpressions.Regex]::Replace($Value, "[^A-Za-z0-9_\.]", "_")
     if ([string]::IsNullOrWhiteSpace($name) -or -not [char]::IsLetter($name[0])) {
@@ -88,11 +128,11 @@ function New-WixPublishedFilesInclude {
     $lines.Add("<Include xmlns=`"http://wixtoolset.org/schemas/v4/wxs`">")
 
     $directories = Get-ChildItem -LiteralPath $PublishDir -Directory -Recurse |
-        Sort-Object { [System.IO.Path]::GetRelativePath($PublishDir, $_.FullName).Split([System.IO.Path]::DirectorySeparatorChar).Count }
+        Sort-Object { (Get-RelativePathCompat -BasePath $PublishDir -TargetPath $_.FullName).Split([System.IO.Path]::DirectorySeparatorChar).Count }
 
     foreach ($directory in $directories) {
-        $relativePath = [System.IO.Path]::GetRelativePath($PublishDir, $directory.FullName)
-        $parentRelativePath = [System.IO.Path]::GetRelativePath($PublishDir, (Split-Path -Parent $directory.FullName))
+        $relativePath = Get-RelativePathCompat -BasePath $PublishDir -TargetPath $directory.FullName
+        $parentRelativePath = Get-RelativePathCompat -BasePath $PublishDir -TargetPath (Split-Path -Parent $directory.FullName)
         if ($parentRelativePath -eq ".") {
             $parentRelativePath = ""
         }
@@ -110,10 +150,10 @@ function New-WixPublishedFilesInclude {
     }
 
     $files = Get-ChildItem -LiteralPath $PublishDir -File -Recurse |
-        Sort-Object { [System.IO.Path]::GetRelativePath($PublishDir, $_.FullName) }
+        Sort-Object { Get-RelativePathCompat -BasePath $PublishDir -TargetPath $_.FullName }
 
     foreach ($file in $files) {
-        $relativePath = [System.IO.Path]::GetRelativePath($PublishDir, $file.FullName)
+        $relativePath = Get-RelativePathCompat -BasePath $PublishDir -TargetPath $file.FullName
         $relativeDirectory = Split-Path -Parent $relativePath
         if ($relativeDirectory -eq ".") {
             $relativeDirectory = ""
@@ -186,7 +226,7 @@ try {
     dotnet publish src\DiskCompare.App\DiskCompare.App.csproj `
         --configuration $Configuration `
         --runtime $Runtime `
-        --self-contained true `
+        --self-contained false `
         --output $portablePublishDir `
         -p:PublishSingleFile=false `
         -p:DebugType=None `
@@ -196,9 +236,24 @@ try {
         -p:FileVersion=$fileVersion `
         -p:InformationalVersion=$displayVersion
 
-    $portableExeSource = Join-Path $portablePublishDir "DiskCompare.exe"
-    if (-not (Test-Path $portableExeSource)) {
-        throw "Portable executable was not found: $portableExeSource"
+    dotnet publish src\DiskCompare.Launcher\DiskCompare.Launcher.csproj `
+        --configuration $Configuration `
+        --output $portablePublishDir `
+        -p:DebugType=None `
+        -p:DebugSymbols=false `
+        -p:Version=$version `
+        -p:AssemblyVersion=$fileVersion `
+        -p:FileVersion=$fileVersion `
+        -p:InformationalVersion=$displayVersion
+
+    $launcherExeSource = Join-Path $portablePublishDir "DiskCompare.exe"
+    if (-not (Test-Path $launcherExeSource)) {
+        throw "Launcher executable was not found: $launcherExeSource"
+    }
+
+    $appHostExeSource = Join-Path $portablePublishDir "DiskCompare.AppHost.exe"
+    if (-not (Test-Path $appHostExeSource)) {
+        throw "Application host executable was not found: $appHostExeSource"
     }
 
     $exeArtifact = Join-Path $releaseDir "DiskCompare-$displayVersion-$Runtime.exe"
@@ -235,11 +290,11 @@ try {
         Version = $version
         FileVersion = $fileVersion
         DisplayVersion = $displayVersion
-        ReleaseDirectory = [System.IO.Path]::GetRelativePath($repoRoot, $releaseDir)
-        ReleaseNotes = [System.IO.Path]::GetRelativePath($repoRoot, $releaseNotesPath)
-        Exe = [System.IO.Path]::GetRelativePath($repoRoot, $exeArtifact)
-        Portable = [System.IO.Path]::GetRelativePath($repoRoot, $portableArtifact)
-        Msi = [System.IO.Path]::GetRelativePath($repoRoot, $msiArtifact)
+        ReleaseDirectory = Get-RelativePathCompat -BasePath $repoRoot -TargetPath $releaseDir
+        ReleaseNotes = Get-RelativePathCompat -BasePath $repoRoot -TargetPath $releaseNotesPath
+        Exe = Get-RelativePathCompat -BasePath $repoRoot -TargetPath $exeArtifact
+        Portable = Get-RelativePathCompat -BasePath $repoRoot -TargetPath $portableArtifact
+        Msi = Get-RelativePathCompat -BasePath $repoRoot -TargetPath $msiArtifact
     } | ConvertTo-Json -Compress
 }
 finally {
