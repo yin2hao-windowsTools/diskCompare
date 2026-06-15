@@ -67,6 +67,7 @@ artifacts/
 .artifacts/
 .tools/
 .wix/
+output/
 
 # Tye
 .tye/
