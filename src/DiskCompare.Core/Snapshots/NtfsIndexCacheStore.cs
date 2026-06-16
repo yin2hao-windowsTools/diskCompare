@@ -21,20 +21,18 @@ internal sealed class NtfsIndexCacheStore
 
     public NtfsIndexCache? TryLoad(string driveRoot, uint volumeSerialNumber)
     {
-        NtfsIndexCache? bestCache = null;
-        foreach (var cachePath in EnumerateCachePaths(driveRoot, volumeSerialNumber))
+        foreach (var candidate in EnumerateCacheCandidates(driveRoot, volumeSerialNumber))
         {
             try
             {
-                EnsureFileIsNotReparsePoint(cachePath);
-                var info = new FileInfo(cachePath);
-                if (info.Length > MaxCacheFileBytes)
+                EnsureFileIsNotReparsePoint(candidate.Path);
+                if (candidate.Length > MaxCacheFileBytes)
                 {
                     continue;
                 }
 
                 using var input = new FileStream(
-                    cachePath,
+                    candidate.Path,
                     FileMode.Open,
                     FileAccess.Read,
                     FileShare.Read,
@@ -48,10 +46,7 @@ internal sealed class NtfsIndexCacheStore
                     continue;
                 }
 
-                if (bestCache is null || cache.NextUsn > bestCache.NextUsn)
-                {
-                    bestCache = cache;
-                }
+                return cache;
             }
             catch (Exception ex) when (IsRecoverable(ex))
             {
@@ -59,7 +54,7 @@ internal sealed class NtfsIndexCacheStore
             }
         }
 
-        return bestCache;
+        return null;
     }
 
     public void Save(NtfsIndexCache cache)
@@ -201,6 +196,16 @@ internal sealed class NtfsIndexCacheStore
         return Directory.EnumerateFiles(_cacheDirectory, $"{prefix}-*{CacheExtension}");
     }
 
+    private IEnumerable<CacheCandidate> EnumerateCacheCandidates(string driveRoot, uint volumeSerialNumber)
+    {
+        return EnumerateCachePaths(driveRoot, volumeSerialNumber)
+            .Select(static path => new FileInfo(path))
+            .Where(static info => !info.Attributes.HasFlag(FileAttributes.ReparsePoint))
+            .Select(static info => new CacheCandidate(info.FullName, TryParseNextUsnFromCacheName(info.Name), info.Length))
+            .OrderByDescending(static candidate => candidate.NextUsn)
+            .ThenByDescending(static candidate => candidate.Path, StringComparer.OrdinalIgnoreCase);
+    }
+
     private void PruneOldCaches(string driveRoot, uint volumeSerialNumber)
     {
         var cachePaths = EnumerateCachePaths(driveRoot, volumeSerialNumber)
@@ -276,6 +281,27 @@ internal sealed class NtfsIndexCacheStore
         return $"{driveName}-{volumeSerialNumber:X8}";
     }
 
+    private static long TryParseNextUsnFromCacheName(string fileName)
+    {
+        var extensionless = Path.GetFileNameWithoutExtension(fileName);
+        var lastDash = extensionless.LastIndexOf('-');
+        if (lastDash <= 0)
+        {
+            return long.MinValue;
+        }
+
+        var secondLastDash = extensionless.LastIndexOf('-', lastDash - 1);
+        if (secondLastDash < 0 || secondLastDash + 1 >= lastDash)
+        {
+            return long.MinValue;
+        }
+
+        var usnText = extensionless.AsSpan(secondLastDash + 1, lastDash - secondLastDash - 1);
+        return long.TryParse(usnText, System.Globalization.NumberStyles.HexNumber, System.Globalization.CultureInfo.InvariantCulture, out var nextUsn)
+            ? nextUsn
+            : long.MinValue;
+    }
+
     private static void EnsureNoExistingAncestorIsReparsePoint(string directory)
     {
         var current = new DirectoryInfo(directory);
@@ -340,4 +366,6 @@ internal sealed class NtfsIndexCacheStore
             or NotSupportedException
             or ArgumentException;
     }
+
+    private sealed record CacheCandidate(string Path, long NextUsn, long Length);
 }
