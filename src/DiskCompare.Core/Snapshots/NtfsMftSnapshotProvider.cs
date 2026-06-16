@@ -73,6 +73,47 @@ internal sealed class NtfsMftSnapshotProvider
             cache.Records);
     }
 
+    internal static Snapshot CreateSnapshotFromRecordArrayForTest(NtfsIndexCache cache)
+    {
+        long maxRecordNumber = -1;
+        foreach (var cachedRecord in cache.Records)
+        {
+            maxRecordNumber = Math.Max(maxRecordNumber, cachedRecord.RecordNumber);
+        }
+
+        var records = new NtfsRecordEntry?[maxRecordNumber < 0
+            ? 0
+            : checked((int)maxRecordNumber + 1)];
+
+        foreach (var cachedRecord in cache.Records)
+        {
+            var entry = new NtfsRecordEntry(cachedRecord.RecordNumber, cachedRecord.IsDirectory)
+            {
+                DataSize = cachedRecord.DataSize,
+                FileNameSize = cachedRecord.FileNameSize
+            };
+
+            foreach (var name in cachedRecord.Names)
+            {
+                entry.AddName(name);
+            }
+
+            records[checked((int)cachedRecord.RecordNumber)] = entry;
+        }
+
+        var indexedSnapshot = BuildIndexedSnapshot(records);
+        return new Snapshot(
+            EnsureTrailingSeparator(cache.DriveRoot),
+            string.Empty,
+            cache.FileSystem,
+            cache.UpdatedAtUtc,
+            [],
+            [],
+            indexedSnapshot.Folders,
+            indexedSnapshot.TotalBytes,
+            indexedSnapshot.FileCount);
+    }
+
     private static Snapshot Create(
         string driveRoot,
         IProgress<SnapshotProgress>? progress,
@@ -132,11 +173,11 @@ internal sealed class NtfsMftSnapshotProvider
         }
 
         progress?.Report(new SnapshotProgress("正在读取 NTFS MFT 元数据...", 0, 0, 0, "NTFS MFT 快速索引"));
-        var entries = ReadRecords(stream, boot, mftMap, recordCount, progress, cancellationToken);
-        var indexedSnapshot = BuildIndexedSnapshot(entries);
+        var records = ReadRecords(stream, boot, mftMap, recordCount, progress, cancellationToken);
+        var indexedSnapshot = BuildIndexedSnapshot(records);
         if (volumeSerialNumber is not null && journal is not null)
         {
-            QueueSaveCache(driveRoot, format, volumeSerialNumber.Value, journal, entries, progress);
+            QueueSaveCache(driveRoot, format, volumeSerialNumber.Value, journal, records, progress);
         }
 
         progress?.Report(new SnapshotProgress("NTFS MFT 快速索引完成", indexedSnapshot.FileCount, indexedSnapshot.TotalBytes, 0, "NTFS MFT 快速索引"));
@@ -325,7 +366,7 @@ internal sealed class NtfsMftSnapshotProvider
         throw new InvalidDataException("Unable to locate the non-resident $MFT data attribute.");
     }
 
-    private static Dictionary<long, NtfsRecordEntry> ReadRecords(
+    private static NtfsRecordEntry?[] ReadRecords(
         FileStream stream,
         NtfsBootSector boot,
         MftDataMap mftMap,
@@ -333,8 +374,13 @@ internal sealed class NtfsMftSnapshotProvider
         IProgress<SnapshotProgress>? progress,
         CancellationToken cancellationToken)
     {
-        var capacity = (int)Math.Min(recordCount, 1_000_000);
-        var entries = new Dictionary<long, NtfsRecordEntry>(capacity);
+        if (recordCount > int.MaxValue)
+        {
+            throw new InvalidDataException("The NTFS MFT contains too many records to index in one snapshot.");
+        }
+
+        var entries = new NtfsRecordEntry?[recordCount];
+        var parsedRecords = 0;
         var chunkRecordCapacity = Math.Max(1, Math.Min(RecordsPerChunk, 32 * 1024 * 1024 / boot.FileRecordSize));
         var buffer = new byte[chunkRecordCapacity * boot.FileRecordSize];
         long recordNumber = 0;
@@ -372,7 +418,8 @@ internal sealed class NtfsMftSnapshotProvider
                     var entry = TryParseRecord(record, currentRecordNumber, boot.BytesPerSector);
                     if (entry is not null)
                     {
-                        entries[currentRecordNumber] = entry;
+                        entries[(int)currentRecordNumber] = entry;
+                        parsedRecords++;
                     }
                 }
 
@@ -382,7 +429,7 @@ internal sealed class NtfsMftSnapshotProvider
 
                 if (recordNumber % ProgressRecordInterval == 0)
                 {
-                    progress?.Report(new SnapshotProgress($"正在读取 NTFS MFT 记录 {recordNumber:N0}/{recordCount:N0}", entries.Count, 0, 0, "NTFS MFT 快速索引"));
+                    progress?.Report(new SnapshotProgress($"正在读取 NTFS MFT 记录 {recordNumber:N0}/{recordCount:N0}", parsedRecords, 0, 0, "NTFS MFT 快速索引"));
                 }
             }
 
@@ -503,45 +550,22 @@ internal sealed class NtfsMftSnapshotProvider
         return BuildIndexedSnapshot(entries.Values);
     }
 
-    private static IndexedSnapshot BuildIndexedSnapshot<TRecord>(IEnumerable<TRecord> records)
-        where TRecord : INtfsRecord
+    private static IndexedSnapshot BuildIndexedSnapshot(NtfsRecordEntry?[] records)
     {
-        var estimatedCount = records.TryGetNonEnumeratedCount(out var count) ? count : 0;
-        var estimatedDirectoryCount = Math.Min(estimatedCount, 1_000_000);
+        var estimatedDirectoryCount = Math.Min(records.Length, 1_000_000);
         var directDirectoryAggregates = new Dictionary<long, DirectoryAggregate>();
         var directoryChildren = new Dictionary<long, List<long>>();
         var directoryPathCache = new Dictionary<long, string?> { [RootDirectoryRecordNumber] = string.Empty };
         var directories = estimatedDirectoryCount > 0
-            ? new Dictionary<long, TRecord>(estimatedDirectoryCount)
-            : new Dictionary<long, TRecord>();
+            ? new Dictionary<long, NtfsRecordEntry>(estimatedDirectoryCount)
+            : new Dictionary<long, NtfsRecordEntry>();
 
         foreach (var entry in records)
         {
-            if (entry.IsDirectory)
+            if (entry is not null)
             {
-                directories[entry.RecordNumber] = entry;
-                var parentRecordNumber = GetPreferredVisibleName(entry)?.ParentRecordNumber;
-                if (parentRecordNumber is null || parentRecordNumber.Value == entry.RecordNumber)
-                {
-                    continue;
-                }
-
-                if (!directoryChildren.TryGetValue(parentRecordNumber.Value, out var children))
-                {
-                    children = [];
-                    directoryChildren[parentRecordNumber.Value] = children;
-                }
-
-                children.Add(entry.RecordNumber);
-                continue;
+                AddIndexedRecord(entry, directories, directoryChildren, directDirectoryAggregates);
             }
-
-            if (entry.RecordNumber < FirstUserRecordNumber)
-            {
-                continue;
-            }
-
-            AddVisibleFileAggregates(entry, directDirectoryAggregates);
         }
 
         var folderSizes = BuildFolderSizes(directories, directDirectoryAggregates, directoryChildren, directoryPathCache);
@@ -559,6 +583,74 @@ internal sealed class NtfsMftSnapshotProvider
         }
 
         return new IndexedSnapshot(ToFolderEntries(folderSizes), totalBytes, fileCount);
+    }
+
+    private static IndexedSnapshot BuildIndexedSnapshot<TRecord>(IEnumerable<TRecord> records)
+        where TRecord : INtfsRecord
+    {
+        var estimatedCount = records.TryGetNonEnumeratedCount(out var count) ? count : 0;
+        var estimatedDirectoryCount = Math.Min(estimatedCount, 1_000_000);
+        var directDirectoryAggregates = new Dictionary<long, DirectoryAggregate>();
+        var directoryChildren = new Dictionary<long, List<long>>();
+        var directoryPathCache = new Dictionary<long, string?> { [RootDirectoryRecordNumber] = string.Empty };
+        var directories = estimatedDirectoryCount > 0
+            ? new Dictionary<long, TRecord>(estimatedDirectoryCount)
+            : new Dictionary<long, TRecord>();
+
+        foreach (var entry in records)
+        {
+            AddIndexedRecord(entry, directories, directoryChildren, directDirectoryAggregates);
+        }
+
+        var folderSizes = BuildFolderSizes(directories, directDirectoryAggregates, directoryChildren, directoryPathCache);
+        long totalBytes = 0;
+        var fileCount = 0;
+        foreach (var (directoryRecordNumber, aggregate) in directDirectoryAggregates)
+        {
+            if (!IsReachableDirectory(directoryRecordNumber, directoryPathCache))
+            {
+                continue;
+            }
+
+            totalBytes += aggregate.Size;
+            fileCount += aggregate.FileCount;
+        }
+
+        return new IndexedSnapshot(ToFolderEntries(folderSizes), totalBytes, fileCount);
+    }
+
+    private static void AddIndexedRecord<TRecord>(
+        TRecord entry,
+        Dictionary<long, TRecord> directories,
+        Dictionary<long, List<long>> directoryChildren,
+        Dictionary<long, DirectoryAggregate> directDirectoryAggregates)
+        where TRecord : INtfsRecord
+    {
+        if (entry.IsDirectory)
+        {
+            directories[entry.RecordNumber] = entry;
+            var parentRecordNumber = GetPreferredVisibleName(entry)?.ParentRecordNumber;
+            if (parentRecordNumber is null || parentRecordNumber.Value == entry.RecordNumber)
+            {
+                return;
+            }
+
+            if (!directoryChildren.TryGetValue(parentRecordNumber.Value, out var children))
+            {
+                children = [];
+                directoryChildren[parentRecordNumber.Value] = children;
+            }
+
+            children.Add(entry.RecordNumber);
+            return;
+        }
+
+        if (entry.RecordNumber < FirstUserRecordNumber)
+        {
+            return;
+        }
+
+        AddVisibleFileAggregates(entry, directDirectoryAggregates);
     }
 
     private static Dictionary<string, FolderSizeEntryBuilder> BuildFolderSizes<TRecord>(
@@ -752,6 +844,24 @@ internal sealed class NtfsMftSnapshotProvider
         string fileSystem,
         uint volumeSerialNumber,
         UsnJournalData journal,
+        NtfsRecordEntry?[] records,
+        IProgress<SnapshotProgress>? progress)
+    {
+        try
+        {
+            _ = Task.Run(() => CreateAndSaveCache(driveRoot, fileSystem, volumeSerialNumber, journal, records, progress));
+        }
+        catch (Exception ex) when (IsExpectedFastIndexFailure(ex))
+        {
+            progress?.Report(new SnapshotProgress($"NTFS 索引缓存后台任务启动失败，已跳过: {ex.Message}", 0, 0, 0, "NTFS MFT 快速索引"));
+        }
+    }
+
+    private static void QueueSaveCache(
+        string driveRoot,
+        string fileSystem,
+        uint volumeSerialNumber,
+        UsnJournalData journal,
         Dictionary<long, NtfsRecordEntry> entries,
         IProgress<SnapshotProgress>? progress)
     {
@@ -780,6 +890,24 @@ internal sealed class NtfsMftSnapshotProvider
         catch (Exception ex) when (IsExpectedFastIndexFailure(ex))
         {
             progress?.Report(new SnapshotProgress($"NTFS 索引缓存后台任务启动失败，已跳过: {ex.Message}", 0, 0, 0, "NTFS MFT 快速索引"));
+        }
+    }
+
+    private static void CreateAndSaveCache(
+        string driveRoot,
+        string fileSystem,
+        uint volumeSerialNumber,
+        UsnJournalData journal,
+        NtfsRecordEntry?[] records,
+        IProgress<SnapshotProgress>? progress)
+    {
+        try
+        {
+            SaveCache(CreateCache(driveRoot, fileSystem, volumeSerialNumber, journal, ToCacheRecords(records)), progress);
+        }
+        catch (Exception ex) when (IsExpectedFastIndexFailure(ex))
+        {
+            progress?.Report(new SnapshotProgress($"NTFS 索引缓存保存失败，已跳过: {ex.Message}", 0, 0, 0, "NTFS MFT 快速索引"));
         }
     }
 
@@ -837,6 +965,30 @@ internal sealed class NtfsMftSnapshotProvider
         foreach (var entry in entries.Values)
         {
             records[recordIndex++] = CreateCacheRecord(entry);
+        }
+
+        return records;
+    }
+
+    private static NtfsCachedRecord[] ToCacheRecords(NtfsRecordEntry?[] entries)
+    {
+        var recordCount = 0;
+        foreach (var entry in entries)
+        {
+            if (entry is not null)
+            {
+                recordCount++;
+            }
+        }
+
+        var records = new NtfsCachedRecord[recordCount];
+        var recordIndex = 0;
+        foreach (var entry in entries)
+        {
+            if (entry is not null)
+            {
+                records[recordIndex++] = CreateCacheRecord(entry);
+            }
         }
 
         return records;
