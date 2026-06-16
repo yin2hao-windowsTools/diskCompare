@@ -8,6 +8,7 @@ var tests = new (string Name, Action Run)[]
 {
     ("Compare aggregates folder growth and shrinkage", CompareAggregatesFolderGrowthAndShrinkage),
     ("Snapshot progress exposes scan mode", SnapshotProgressExposesScanMode),
+    ("Snapshot progress carries latest scan error", SnapshotProgressCarriesLatestScanError),
     ("Snapshot store round trips compressed data", SnapshotStoreRoundTripsCompressedData),
     ("Snapshot store rejects unsafe output paths", SnapshotStoreRejectsUnsafeOutputPaths),
     ("Snapshot store rejects unsafe input paths", SnapshotStoreRejectsUnsafeInputPaths),
@@ -89,6 +90,16 @@ static void SnapshotProgressExposesScanMode()
 {
     var progress = new SnapshotProgress("C:\\", 10, 1024, 1, "NTFS MFT 快速索引");
     AssertEqual("NTFS MFT 快速索引", progress.Mode, "Progress mode");
+}
+
+static void SnapshotProgressCarriesLatestScanError()
+{
+    var error = new ScanError(Path.Combine("C:\\", "Locked"), "Access denied");
+    var progress = new SnapshotProgress(error.Path, 10, 1024, 1, "目录扫描", error);
+
+    AssertEqual(error, progress.LatestError, "Latest error");
+    AssertEqual(error.Path, progress.LatestError?.Path, "Latest error path");
+    AssertEqual(error.Message, progress.LatestError?.Message, "Latest error message");
 }
 
 static void SnapshotStoreRoundTripsCompressedData()

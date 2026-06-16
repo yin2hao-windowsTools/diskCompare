@@ -105,13 +105,13 @@ public sealed class SnapshotBuilder
                     }
                     catch (Exception ex) when (IsRecoverable(ex))
                     {
-                        errors.Add(new ScanError(item.FullName, ex.Message));
+                        AddScanError(errors, item.FullName, ex, filesScanned, bytesScanned, progress);
                     }
                 }
             }
             catch (Exception ex) when (IsRecoverable(ex))
             {
-                errors.Add(new ScanError(current.FullPath, ex.Message));
+                AddScanError(errors, current.FullPath, ex, filesScanned, bytesScanned, progress);
             }
         }
 
@@ -149,6 +149,19 @@ public sealed class SnapshotBuilder
             or System.Security.SecurityException
             or PathTooLongException
             or NotSupportedException;
+    }
+
+    private static void AddScanError(
+        List<ScanError> errors,
+        string path,
+        Exception exception,
+        int filesScanned,
+        long bytesScanned,
+        IProgress<SnapshotProgress>? progress)
+    {
+        var error = new ScanError(path, exception.Message);
+        errors.Add(error);
+        progress?.Report(new SnapshotProgress(path, filesScanned, bytesScanned, errors.Count, "目录扫描", error));
     }
 
     private static string EnsureTrailingSeparator(string path)

@@ -5,4 +5,5 @@ public sealed record SnapshotProgress(
     int FilesScanned,
     long BytesScanned,
     int ErrorCount,
-    string Mode = "");
+    string Mode = "",
+    ScanError? LatestError = null);
