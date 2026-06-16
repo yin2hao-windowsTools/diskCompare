@@ -50,7 +50,7 @@ internal sealed class NtfsMftSnapshotProvider
 
     internal static Snapshot CreateSnapshotFromIndexCache(NtfsIndexCache cache)
     {
-        var indexedSnapshot = BuildIndexedSnapshot(ToEntries(cache));
+        var indexedSnapshot = BuildIndexedSnapshot(cache.Records);
         return new Snapshot(
             EnsureTrailingSeparator(cache.DriveRoot),
             string.Empty,
@@ -70,7 +70,7 @@ internal sealed class NtfsMftSnapshotProvider
             cache.FileSystem,
             cache.VolumeSerialNumber,
             new UsnJournalData(cache.UsnJournalId, cache.LowestValidUsn, cache.NextUsn, cache.LowestValidUsn),
-            ToEntries(cache));
+            cache.Records);
     }
 
     private static Snapshot Create(
@@ -175,7 +175,6 @@ internal sealed class NtfsMftSnapshotProvider
             }
 
             progress?.Report(new SnapshotProgress("正在读取 NTFS USN 增量日志...", 0, 0, 0, "NTFS USN 增量索引"));
-            var entries = ToEntries(cache);
             var changedRecordNumbers = ReadChangedRecordNumbers(
                 stream.SafeFileHandle,
                 cache.NextUsn,
@@ -184,22 +183,37 @@ internal sealed class NtfsMftSnapshotProvider
                 progress,
                 cancellationToken);
 
-            var recordBuffer = new byte[boot.FileRecordSize];
-            foreach (var changedRecordNumber in changedRecordNumbers)
+            NtfsCachedRecord[] snapshotRecords;
+            if (changedRecordNumbers.Count == 0)
             {
-                cancellationToken.ThrowIfCancellationRequested();
-                var entry = TryReadRecord(stream, boot, mftMap, recordCount, changedRecordNumber, recordBuffer);
-                if (entry is null)
+                snapshotRecords = cache.Records;
+                if (cache.NextUsn != journal.NextUsn)
                 {
-                    entries.Remove(changedRecordNumber);
-                    continue;
+                    QueueSaveCache(driveRoot, fileSystem, volumeSerialNumber, journal, snapshotRecords, progress);
+                }
+            }
+            else
+            {
+                var entries = ToCachedEntries(cache);
+                var recordBuffer = new byte[boot.FileRecordSize];
+                foreach (var changedRecordNumber in changedRecordNumbers)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    var entry = TryReadRecord(stream, boot, mftMap, recordCount, changedRecordNumber, recordBuffer);
+                    if (entry is null)
+                    {
+                        entries.Remove(changedRecordNumber);
+                        continue;
+                    }
+
+                    entries[changedRecordNumber] = CreateCacheRecord(entry);
                 }
 
-                entries[changedRecordNumber] = entry;
+                snapshotRecords = ToCacheRecords(entries);
+                QueueSaveCache(driveRoot, fileSystem, volumeSerialNumber, journal, snapshotRecords, progress);
             }
 
-            var indexedSnapshot = BuildIndexedSnapshot(entries);
-            QueueSaveCache(driveRoot, fileSystem, volumeSerialNumber, journal, entries, progress);
+            var indexedSnapshot = BuildIndexedSnapshot(snapshotRecords);
             progress?.Report(new SnapshotProgress("NTFS USN 增量索引完成", indexedSnapshot.FileCount, indexedSnapshot.TotalBytes, 0, "NTFS USN 增量索引"));
 
             return new Snapshot(
@@ -486,58 +500,51 @@ internal sealed class NtfsMftSnapshotProvider
 
     private static IndexedSnapshot BuildIndexedSnapshot(Dictionary<long, NtfsRecordEntry> entries)
     {
+        return BuildIndexedSnapshot(entries.Values);
+    }
+
+    private static IndexedSnapshot BuildIndexedSnapshot<TRecord>(IEnumerable<TRecord> records)
+        where TRecord : INtfsRecord
+    {
+        var estimatedCount = records.TryGetNonEnumeratedCount(out var count) ? count : 0;
+        var estimatedDirectoryCount = Math.Min(estimatedCount, 1_000_000);
         var directDirectoryAggregates = new Dictionary<long, DirectoryAggregate>();
         var directoryChildren = new Dictionary<long, List<long>>();
         var directoryPathCache = new Dictionary<long, string?> { [RootDirectoryRecordNumber] = string.Empty };
+        var directories = estimatedDirectoryCount > 0
+            ? new Dictionary<long, TRecord>(estimatedDirectoryCount)
+            : new Dictionary<long, TRecord>();
 
-        foreach (var entry in entries.Values)
+        foreach (var entry in records)
         {
-            if (!entry.IsDirectory)
+            if (entry.IsDirectory)
             {
-                continue;
-            }
-
-            var parentRecordNumber = entry.GetPreferredVisibleName()?.ParentRecordNumber;
-            if (parentRecordNumber is null || parentRecordNumber.Value == entry.RecordNumber)
-            {
-                continue;
-            }
-
-            if (!directoryChildren.TryGetValue(parentRecordNumber.Value, out var children))
-            {
-                children = [];
-                directoryChildren[parentRecordNumber.Value] = children;
-            }
-
-            children.Add(entry.RecordNumber);
-        }
-
-        foreach (var entry in entries.Values)
-        {
-            if (entry.RecordNumber < FirstUserRecordNumber || entry.IsDirectory)
-            {
-                continue;
-            }
-
-            foreach (var name in entry.GetVisibleNames())
-            {
-                if (name.IsReparsePoint)
+                directories[entry.RecordNumber] = entry;
+                var parentRecordNumber = GetPreferredVisibleName(entry)?.ParentRecordNumber;
+                if (parentRecordNumber is null || parentRecordNumber.Value == entry.RecordNumber)
                 {
                     continue;
                 }
 
-                if (!directDirectoryAggregates.TryGetValue(name.ParentRecordNumber, out var aggregate))
+                if (!directoryChildren.TryGetValue(parentRecordNumber.Value, out var children))
                 {
-                    aggregate = new DirectoryAggregate();
-                    directDirectoryAggregates[name.ParentRecordNumber] = aggregate;
+                    children = [];
+                    directoryChildren[parentRecordNumber.Value] = children;
                 }
 
-                aggregate.Size += entry.Size;
-                aggregate.FileCount++;
+                children.Add(entry.RecordNumber);
+                continue;
             }
+
+            if (entry.RecordNumber < FirstUserRecordNumber)
+            {
+                continue;
+            }
+
+            AddVisibleFileAggregates(entry, directDirectoryAggregates);
         }
 
-        var folderSizes = BuildFolderSizes(entries, directDirectoryAggregates, directoryChildren, directoryPathCache);
+        var folderSizes = BuildFolderSizes(directories, directDirectoryAggregates, directoryChildren, directoryPathCache);
         long totalBytes = 0;
         var fileCount = 0;
         foreach (var (directoryRecordNumber, aggregate) in directDirectoryAggregates)
@@ -554,16 +561,12 @@ internal sealed class NtfsMftSnapshotProvider
         return new IndexedSnapshot(ToFolderEntries(folderSizes), totalBytes, fileCount);
     }
 
-    private static bool IsReachableDirectory(long directoryRecordNumber, Dictionary<long, string?> directoryPathCache)
-    {
-        return directoryPathCache.TryGetValue(directoryRecordNumber, out var path) && path is not null;
-    }
-
-    private static Dictionary<string, FolderSizeEntryBuilder> BuildFolderSizes(
-        Dictionary<long, NtfsRecordEntry> entries,
+    private static Dictionary<string, FolderSizeEntryBuilder> BuildFolderSizes<TRecord>(
+        Dictionary<long, TRecord> directories,
         Dictionary<long, DirectoryAggregate> directDirectoryAggregates,
         Dictionary<long, List<long>> directoryChildren,
         Dictionary<long, string?> directoryPathCache)
+        where TRecord : INtfsRecord
     {
         var folderSizes = new Dictionary<string, FolderSizeEntryBuilder>(StringComparer.OrdinalIgnoreCase);
         var subtreeSizeCache = new Dictionary<long, long>();
@@ -576,13 +579,13 @@ internal sealed class NtfsMftSnapshotProvider
                 continue;
             }
 
-            if (!entries.TryGetValue(directoryRecordNumber, out var entry) || !entry.IsDirectory)
+            if (!directories.ContainsKey(directoryRecordNumber))
             {
                 continue;
             }
 
             visiting.Clear();
-            _ = ResolveDirectoryPath(directoryRecordNumber, entries, directoryPathCache, visiting);
+            _ = ResolveDirectoryPath(directoryRecordNumber, directories, directoryPathCache, visiting);
         }
 
         foreach (var (directoryRecordNumber, path) in directoryPathCache)
@@ -592,7 +595,7 @@ internal sealed class NtfsMftSnapshotProvider
                 continue;
             }
 
-            if (!entries.TryGetValue(directoryRecordNumber, out var entry) || !entry.IsDirectory)
+            if (!directories.ContainsKey(directoryRecordNumber))
             {
                 continue;
             }
@@ -605,6 +608,87 @@ internal sealed class NtfsMftSnapshotProvider
         }
 
         return folderSizes;
+    }
+
+    private static bool IsReachableDirectory(long directoryRecordNumber, Dictionary<long, string?> directoryPathCache)
+    {
+        return directoryPathCache.TryGetValue(directoryRecordNumber, out var path) && path is not null;
+    }
+
+    private static void AddVisibleFileAggregates<TRecord>(
+        TRecord entry,
+        Dictionary<long, DirectoryAggregate> directDirectoryAggregates)
+        where TRecord : INtfsRecord
+    {
+        for (var index = 0; index < entry.NameCount; index++)
+        {
+            var name = entry.GetName(index);
+            if (IsPreferredVisibleName(name))
+            {
+                AddFileAggregate(entry, name, directDirectoryAggregates);
+            }
+        }
+
+        for (var index = 0; index < entry.NameCount; index++)
+        {
+            var name = entry.GetName(index);
+            if (IsSecondaryVisibleName(name))
+            {
+                AddFileAggregate(entry, name, directDirectoryAggregates);
+            }
+        }
+    }
+
+    private static void AddFileAggregate<TRecord>(
+        TRecord entry,
+        NtfsCachedName name,
+        Dictionary<long, DirectoryAggregate> directDirectoryAggregates)
+        where TRecord : INtfsRecord
+    {
+        if (name.IsReparsePoint)
+        {
+            return;
+        }
+
+        if (!directDirectoryAggregates.TryGetValue(name.ParentRecordNumber, out var aggregate))
+        {
+            aggregate = new DirectoryAggregate();
+            directDirectoryAggregates[name.ParentRecordNumber] = aggregate;
+        }
+
+        aggregate.Size += entry.Size;
+        aggregate.FileCount++;
+    }
+
+    private static NtfsCachedName? GetPreferredVisibleName<TRecord>(TRecord entry)
+        where TRecord : INtfsRecord
+    {
+        NtfsCachedName? fallback = null;
+        for (var index = 0; index < entry.NameCount; index++)
+        {
+            var name = entry.GetName(index);
+            if (IsPreferredVisibleName(name))
+            {
+                return name;
+            }
+
+            if (fallback is null && IsSecondaryVisibleName(name))
+            {
+                fallback = name;
+            }
+        }
+
+        return fallback;
+    }
+
+    private static bool IsPreferredVisibleName(NtfsCachedName name)
+    {
+        return name.NamespaceId == 1 && name.Name is not "." and not "..";
+    }
+
+    private static bool IsSecondaryVisibleName(NtfsCachedName name)
+    {
+        return name.NamespaceId is not 1 and not 2 && name.Name is not "." and not "..";
     }
 
     private static long GetSubtreeSize(
@@ -656,29 +740,12 @@ internal sealed class NtfsMftSnapshotProvider
             && cache.NextUsn <= journal.NextUsn;
     }
 
-    private static Dictionary<long, NtfsRecordEntry> ToEntries(NtfsIndexCache cache)
+    private static Dictionary<long, NtfsCachedRecord> ToCachedEntries(NtfsIndexCache cache)
     {
-        var entries = new Dictionary<long, NtfsRecordEntry>(cache.Records.Length);
+        var entries = new Dictionary<long, NtfsCachedRecord>(cache.Records.Length);
         foreach (var cachedRecord in cache.Records)
         {
-            var entry = new NtfsRecordEntry(cachedRecord.RecordNumber, cachedRecord.IsDirectory)
-            {
-                DataSize = cachedRecord.DataSize,
-                FileNameSize = cachedRecord.FileNameSize
-            };
-
-            foreach (var cachedName in cachedRecord.Names)
-            {
-                entry.Names.Add(new NtfsFileName(
-                    cachedName.ParentRecordNumber,
-                    cachedName.Name,
-                    cachedName.NamespaceId,
-                    cachedName.Attributes,
-                    cachedName.LastWriteTimeUtc,
-                    cachedName.RealSize));
-            }
-
-            entries[entry.RecordNumber] = entry;
+            entries[cachedRecord.RecordNumber] = cachedRecord;
         }
 
         return entries;
@@ -702,6 +769,24 @@ internal sealed class NtfsMftSnapshotProvider
         }
     }
 
+    private static void QueueSaveCache(
+        string driveRoot,
+        string fileSystem,
+        uint volumeSerialNumber,
+        UsnJournalData journal,
+        NtfsCachedRecord[] records,
+        IProgress<SnapshotProgress>? progress)
+    {
+        try
+        {
+            _ = Task.Run(() => SaveCache(CreateCache(driveRoot, fileSystem, volumeSerialNumber, journal, records), progress));
+        }
+        catch (Exception ex) when (IsExpectedFastIndexFailure(ex))
+        {
+            progress?.Report(new SnapshotProgress($"NTFS 索引缓存后台任务启动失败，已跳过: {ex.Message}", 0, 0, 0, "NTFS MFT 快速索引"));
+        }
+    }
+
     private static void CreateAndSaveCache(
         string driveRoot,
         string fileSystem,
@@ -712,7 +797,7 @@ internal sealed class NtfsMftSnapshotProvider
     {
         try
         {
-            SaveCache(CreateCache(driveRoot, fileSystem, volumeSerialNumber, journal, entries), progress);
+            SaveCache(CreateCache(driveRoot, fileSystem, volumeSerialNumber, journal, ToCacheRecords(entries)), progress);
         }
         catch (Exception ex) when (IsExpectedFastIndexFailure(ex))
         {
@@ -725,33 +810,8 @@ internal sealed class NtfsMftSnapshotProvider
         string fileSystem,
         uint volumeSerialNumber,
         UsnJournalData journal,
-        Dictionary<long, NtfsRecordEntry> entries)
+        NtfsCachedRecord[] records)
     {
-        var records = new NtfsCachedRecord[entries.Count];
-        var recordIndex = 0;
-        foreach (var entry in entries.Values)
-        {
-            var names = new NtfsCachedName[entry.Names.Count];
-            for (var index = 0; index < names.Length; index++)
-            {
-                var name = entry.Names[index];
-                names[index] = new NtfsCachedName(
-                    name.ParentRecordNumber,
-                    name.Name,
-                    name.NamespaceId,
-                    name.Attributes,
-                    name.LastWriteTimeUtc,
-                    name.RealSize);
-            }
-
-            records[recordIndex++] = new NtfsCachedRecord(
-                entry.RecordNumber,
-                entry.IsDirectory,
-                entry.DataSize,
-                entry.FileNameSize,
-                names);
-        }
-
         return new NtfsIndexCache(
             NtfsIndexCache.CurrentSchemaVersion,
             EnsureTrailingSeparator(driveRoot),
@@ -762,6 +822,56 @@ internal sealed class NtfsMftSnapshotProvider
             journal.LowestValidUsn,
             DateTime.UtcNow,
             records);
+    }
+
+    private static NtfsIndexCache CreateCache(
+        string driveRoot,
+        string fileSystem,
+        uint volumeSerialNumber,
+        UsnJournalData journal,
+        Dictionary<long, NtfsRecordEntry> entries)
+    {
+        return CreateCache(driveRoot, fileSystem, volumeSerialNumber, journal, ToCacheRecords(entries));
+    }
+
+    private static NtfsCachedRecord[] ToCacheRecords(Dictionary<long, NtfsRecordEntry> entries)
+    {
+        var records = new NtfsCachedRecord[entries.Count];
+        var recordIndex = 0;
+        foreach (var entry in entries.Values)
+        {
+            records[recordIndex++] = CreateCacheRecord(entry);
+        }
+
+        return records;
+    }
+
+    private static NtfsCachedRecord[] ToCacheRecords(Dictionary<long, NtfsCachedRecord> entries)
+    {
+        var records = new NtfsCachedRecord[entries.Count];
+        var recordIndex = 0;
+        foreach (var entry in entries.Values)
+        {
+            records[recordIndex++] = entry;
+        }
+
+        return records;
+    }
+
+    private static NtfsCachedRecord CreateCacheRecord(NtfsRecordEntry entry)
+    {
+        var names = new NtfsCachedName[entry.Names.Count];
+        for (var index = 0; index < names.Length; index++)
+        {
+            names[index] = entry.Names[index];
+        }
+
+        return new NtfsCachedRecord(
+            entry.RecordNumber,
+            entry.IsDirectory,
+            entry.DataSize,
+            entry.FileNameSize,
+            names);
     }
 
     private static void SaveCache(NtfsIndexCache cache, IProgress<SnapshotProgress>? progress)
@@ -776,11 +886,12 @@ internal sealed class NtfsMftSnapshotProvider
         }
     }
 
-    private static string? ResolveDirectoryPath(
+    private static string? ResolveDirectoryPath<TRecord>(
         long recordNumber,
-        Dictionary<long, NtfsRecordEntry> entries,
+        Dictionary<long, TRecord> entries,
         Dictionary<long, string?> cache,
         HashSet<long> visiting)
+        where TRecord : INtfsRecord
     {
         if (cache.TryGetValue(recordNumber, out var cached))
         {
@@ -800,7 +911,7 @@ internal sealed class NtfsMftSnapshotProvider
             return null;
         }
 
-        var name = entry.GetPreferredVisibleName();
+        var name = GetPreferredVisibleName(entry);
         if (name is null || name.Name == ".")
         {
             cache[recordNumber] = string.Empty;
@@ -853,7 +964,7 @@ internal sealed class NtfsMftSnapshotProvider
         return attribute.Slice(valueOffset, valueLength);
     }
 
-    private static NtfsFileName? TryParseFileName(ReadOnlySpan<byte> value)
+    private static NtfsCachedName? TryParseFileName(ReadOnlySpan<byte> value)
     {
         if (value.Length < 66)
         {
@@ -878,7 +989,7 @@ internal sealed class NtfsMftSnapshotProvider
         var lastWriteTime = SafeFileTime(BinaryPrimitives.ReadInt64LittleEndian(value.Slice(16, 8)));
         var realSize = Math.Max(0, BinaryPrimitives.ReadInt64LittleEndian(value.Slice(48, 8)));
         var attributes = (FileAttributes)BinaryPrimitives.ReadUInt32LittleEndian(value.Slice(56, 4));
-        return new NtfsFileName(parentRecordNumber, name, namespaceId, attributes, lastWriteTime, realSize);
+        return new NtfsCachedName(parentRecordNumber, name, namespaceId, attributes, lastWriteTime, realSize);
     }
 
     private static long GetDataSize(Span<byte> attribute, int attributeLength, bool nonResident)
@@ -910,7 +1021,8 @@ internal sealed class NtfsMftSnapshotProvider
             return false;
         }
 
-        var updateSequenceNumber = record.Slice(updateSequenceOffset, 2);
+        var updateSequenceNumber0 = record[updateSequenceOffset];
+        var updateSequenceNumber1 = record[updateSequenceOffset + 1];
         for (var sector = 1; sector < updateSequenceCount; sector++)
         {
             var sectorEnd = sector * bytesPerSector - 2;
@@ -920,7 +1032,7 @@ internal sealed class NtfsMftSnapshotProvider
                 return false;
             }
 
-            if (!record.Slice(sectorEnd, 2).SequenceEqual(updateSequenceNumber))
+            if (record[sectorEnd] != updateSequenceNumber0 || record[sectorEnd + 1] != updateSequenceNumber1)
             {
                 return false;
             }
@@ -1263,7 +1375,7 @@ internal sealed class NtfsMftSnapshotProvider
         public ulong UsnJournalId = usnJournalId;
     }
 
-    private sealed class NtfsRecordEntry(long recordNumber, bool isDirectory)
+    private sealed class NtfsRecordEntry(long recordNumber, bool isDirectory) : INtfsRecord
     {
         public long RecordNumber { get; } = recordNumber;
 
@@ -1275,66 +1387,14 @@ internal sealed class NtfsMftSnapshotProvider
 
         public long Size => Math.Max(DataSize, FileNameSize);
 
-        public List<NtfsFileName> Names { get; } = [];
+        public List<NtfsCachedName> Names { get; } = [];
 
-        public IEnumerable<NtfsFileName> GetVisibleNames()
+        public int NameCount => Names.Count;
+
+        public NtfsCachedName GetName(int index)
         {
-            foreach (var name in Names)
-            {
-                if (IsPreferredVisibleName(name))
-                {
-                    yield return name;
-                }
-            }
-
-            foreach (var name in Names)
-            {
-                if (IsSecondaryVisibleName(name))
-                {
-                    yield return name;
-                }
-            }
+            return Names[index];
         }
-
-        public NtfsFileName? GetPreferredVisibleName()
-        {
-            NtfsFileName? fallback = null;
-            foreach (var name in Names)
-            {
-                if (IsPreferredVisibleName(name))
-                {
-                    return name;
-                }
-
-                if (fallback is null && IsSecondaryVisibleName(name))
-                {
-                    fallback = name;
-                }
-            }
-
-            return fallback;
-        }
-
-        private static bool IsPreferredVisibleName(NtfsFileName name)
-        {
-            return name.NamespaceId == 1 && name.Name is not "." and not "..";
-        }
-
-        private static bool IsSecondaryVisibleName(NtfsFileName name)
-        {
-            return name.NamespaceId is not 1 and not 2 && name.Name is not "." and not "..";
-        }
-    }
-
-    private sealed record NtfsFileName(
-        long ParentRecordNumber,
-        string Name,
-        byte NamespaceId,
-        FileAttributes Attributes,
-        DateTime LastWriteTimeUtc,
-        long RealSize)
-    {
-        public bool IsReparsePoint => Attributes.HasFlag(FileAttributes.ReparsePoint);
     }
 
     private static class NativeMethods

@@ -202,7 +202,7 @@ internal sealed class NtfsIndexCacheStore
         foreach (var path in EnumerateCachePaths(driveRoot, volumeSerialNumber))
         {
             var info = new FileInfo(path);
-            if (info.Attributes.HasFlag(FileAttributes.ReparsePoint))
+            if ((info.Attributes & FileAttributes.ReparsePoint) != 0)
             {
                 continue;
             }
@@ -226,7 +226,7 @@ internal sealed class NtfsIndexCacheStore
         foreach (var path in EnumerateCachePaths(driveRoot, volumeSerialNumber))
         {
             var info = new FileInfo(path);
-            if (!info.Attributes.HasFlag(FileAttributes.ReparsePoint))
+            if ((info.Attributes & FileAttributes.ReparsePoint) == 0)
             {
                 cachePaths.Add(info);
             }
@@ -332,7 +332,7 @@ internal sealed class NtfsIndexCacheStore
         var current = new DirectoryInfo(directory);
         while (current is not null)
         {
-            if (current.Exists && current.Attributes.HasFlag(FileAttributes.ReparsePoint))
+            if (current.Exists && (current.Attributes & FileAttributes.ReparsePoint) != 0)
             {
                 throw new IOException($"Refusing to write NTFS index cache through a reparse point: {current.FullName}");
             }
@@ -344,7 +344,7 @@ internal sealed class NtfsIndexCacheStore
     private static void EnsureDirectoryIsNotReparsePoint(string directory)
     {
         var info = new DirectoryInfo(directory);
-        if (info.Exists && info.Attributes.HasFlag(FileAttributes.ReparsePoint))
+        if (info.Exists && (info.Attributes & FileAttributes.ReparsePoint) != 0)
         {
             throw new IOException($"Refusing to use a reparse point as the NTFS index cache directory: {info.FullName}");
         }
@@ -353,7 +353,7 @@ internal sealed class NtfsIndexCacheStore
     private static void EnsureFileIsNotReparsePoint(string filePath)
     {
         var attributes = File.GetAttributes(filePath);
-        if (attributes.HasFlag(FileAttributes.ReparsePoint))
+        if ((attributes & FileAttributes.ReparsePoint) != 0)
         {
             throw new IOException($"Refusing to use a reparse point as the NTFS index cache file: {filePath}");
         }

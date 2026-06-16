@@ -14,14 +14,34 @@ internal sealed record NtfsIndexCache(
     public const int CurrentSchemaVersion = 1;
 }
 
+internal interface INtfsRecord
+{
+    long RecordNumber { get; }
+
+    bool IsDirectory { get; }
+
+    long Size { get; }
+
+    int NameCount { get; }
+
+    NtfsCachedName GetName(int index);
+}
+
 internal sealed record NtfsCachedRecord(
     long RecordNumber,
     bool IsDirectory,
     long DataSize,
     long FileNameSize,
-    NtfsCachedName[] Names)
+    NtfsCachedName[] Names) : INtfsRecord
 {
     public long Size => Math.Max(DataSize, FileNameSize);
+
+    public int NameCount => Names.Length;
+
+    public NtfsCachedName GetName(int index)
+    {
+        return Names[index];
+    }
 }
 
 internal sealed record NtfsCachedName(
@@ -32,5 +52,5 @@ internal sealed record NtfsCachedName(
     DateTime LastWriteTimeUtc,
     long RealSize)
 {
-    public bool IsReparsePoint => Attributes.HasFlag(FileAttributes.ReparsePoint);
+    public bool IsReparsePoint => (Attributes & FileAttributes.ReparsePoint) != 0;
 }
