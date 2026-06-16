@@ -223,6 +223,16 @@ public sealed class SnapshotStore
             throw new InvalidDataException($"Snapshot contains too many file entries. Maximum allowed count is {MaxSnapshotFileEntries:N0}.");
         }
 
+        if (snapshot.FileCountOverride is < 0)
+        {
+            throw new InvalidDataException("Snapshot contains an invalid file count.");
+        }
+
+        if (snapshot.TotalBytesOverride is < 0)
+        {
+            throw new InvalidDataException("Snapshot contains an invalid total size.");
+        }
+
         if (snapshot.FolderSizes.Count > MaxSnapshotFolderEntries)
         {
             throw new InvalidDataException($"Snapshot contains too many folder entries. Maximum allowed count is {MaxSnapshotFolderEntries:N0}.");

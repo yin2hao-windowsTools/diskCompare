@@ -34,7 +34,7 @@ public sealed class SnapshotComparer
         Dictionary<string, FolderDelta> index,
         FolderDelta root)
     {
-        if (snapshot.FolderSizes.Count > 0)
+        if (snapshot.FolderSizes.Count > 0 || snapshot.TotalBytesOverride is not null)
         {
             AccumulateFolders(snapshot.FolderSizes, isSnapshot, index, root);
             AddSize(root, snapshot.TotalBytes, isSnapshot);
