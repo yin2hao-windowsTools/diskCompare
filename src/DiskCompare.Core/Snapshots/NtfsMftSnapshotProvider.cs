@@ -411,17 +411,15 @@ internal sealed class NtfsMftSnapshotProvider
                 var diskOffset = (run.LogicalClusterNumber * boot.BytesPerCluster) + (offsetInRunRecords * boot.FileRecordSize);
                 ReadExactlyAt(stream, buffer.AsSpan(0, bytesToRead), diskOffset);
 
-                for (var index = 0; index < recordsToRead; index++)
-                {
-                    var currentRecordNumber = recordNumber + index;
-                    var record = buffer.AsSpan(index * boot.FileRecordSize, boot.FileRecordSize);
-                    var entry = TryParseRecord(record, currentRecordNumber, boot.BytesPerSector);
-                    if (entry is not null)
-                    {
-                        entries[(int)currentRecordNumber] = entry;
-                        parsedRecords++;
-                    }
-                }
+                var chunkParsedRecords = ParseRecordChunk(
+                    buffer,
+                    recordsToRead,
+                    boot.FileRecordSize,
+                    boot.BytesPerSector,
+                    recordNumber,
+                    entries,
+                    cancellationToken);
+                parsedRecords += chunkParsedRecords;
 
                 recordNumber += recordsToRead;
                 offsetInRunRecords += recordsToRead;
@@ -440,6 +438,57 @@ internal sealed class NtfsMftSnapshotProvider
         }
 
         return entries;
+    }
+
+    private static int ParseRecordChunk(
+        byte[] buffer,
+        int recordsToRead,
+        int fileRecordSize,
+        int bytesPerSector,
+        long firstRecordNumber,
+        NtfsRecordEntry?[] entries,
+        CancellationToken cancellationToken)
+    {
+        if (Environment.ProcessorCount <= 1 || recordsToRead < 1024)
+        {
+            var parsedRecords = 0;
+            for (var index = 0; index < recordsToRead; index++)
+            {
+                var currentRecordNumber = firstRecordNumber + index;
+                var record = buffer.AsSpan(index * fileRecordSize, fileRecordSize);
+                var entry = TryParseRecord(record, currentRecordNumber, bytesPerSector);
+                if (entry is not null)
+                {
+                    entries[(int)currentRecordNumber] = entry;
+                    parsedRecords++;
+                }
+            }
+
+            return parsedRecords;
+        }
+
+        var totalParsedRecords = 0;
+        Parallel.For(
+            0,
+            recordsToRead,
+            new ParallelOptions { CancellationToken = cancellationToken },
+            () => 0,
+            (index, _, localParsedRecords) =>
+            {
+                var currentRecordNumber = firstRecordNumber + index;
+                var record = buffer.AsSpan(index * fileRecordSize, fileRecordSize);
+                var entry = TryParseRecord(record, currentRecordNumber, bytesPerSector);
+                if (entry is not null)
+                {
+                    entries[(int)currentRecordNumber] = entry;
+                    localParsedRecords++;
+                }
+
+                return localParsedRecords;
+            },
+            localParsedRecords => Interlocked.Add(ref totalParsedRecords, localParsedRecords));
+
+        return totalParsedRecords;
     }
 
     private static NtfsRecordEntry? TryParseRecord(Span<byte> record, long recordNumber, int bytesPerSector)
