@@ -710,7 +710,8 @@ internal sealed class NtfsMftSnapshotProvider
         UsnJournalData journal,
         Dictionary<long, NtfsRecordEntry> entries)
     {
-        var records = new List<NtfsCachedRecord>(entries.Count);
+        var records = new NtfsCachedRecord[entries.Count];
+        var recordIndex = 0;
         foreach (var entry in entries.Values)
         {
             var names = new NtfsCachedName[entry.Names.Count];
@@ -726,12 +727,12 @@ internal sealed class NtfsMftSnapshotProvider
                     name.RealSize);
             }
 
-            records.Add(new NtfsCachedRecord(
+            records[recordIndex++] = new NtfsCachedRecord(
                 entry.RecordNumber,
                 entry.IsDirectory,
                 entry.DataSize,
                 entry.FileNameSize,
-                names));
+                names);
         }
 
         return new NtfsIndexCache(
@@ -743,7 +744,7 @@ internal sealed class NtfsMftSnapshotProvider
             journal.NextUsn,
             journal.LowestValidUsn,
             DateTime.UtcNow,
-            records.ToArray());
+            records);
     }
 
     private static void SaveCache(NtfsIndexCache cache, IProgress<SnapshotProgress>? progress)
