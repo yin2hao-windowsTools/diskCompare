@@ -442,7 +442,7 @@ internal sealed class NtfsMftSnapshotProvider
                 var fileName = TryParseFileName(value, entry.IsDirectory);
                 if (fileName is not null)
                 {
-                    entry.Names.Add(fileName);
+                    entry.AddName(fileName);
                     entry.FileNameSize = Math.Max(entry.FileNameSize, fileName.RealSize);
                 }
             }
@@ -454,7 +454,7 @@ internal sealed class NtfsMftSnapshotProvider
             offset += length;
         }
 
-        return entry.Names.Count == 0 ? null : entry;
+        return entry.NameCount == 0 ? null : entry;
     }
 
     private static NtfsRecordEntry? TryReadRecord(
@@ -860,10 +860,10 @@ internal sealed class NtfsMftSnapshotProvider
 
     private static NtfsCachedRecord CreateCacheRecord(NtfsRecordEntry entry)
     {
-        var names = new NtfsCachedName[entry.Names.Count];
+        var names = new NtfsCachedName[entry.NameCount];
         for (var index = 0; index < names.Length; index++)
         {
-            names[index] = entry.Names[index];
+            names[index] = entry.GetName(index);
         }
 
         return new NtfsCachedRecord(
@@ -1402,13 +1402,41 @@ internal sealed class NtfsMftSnapshotProvider
 
         public long Size => Math.Max(DataSize, FileNameSize);
 
-        public List<NtfsCachedName> Names { get; } = [];
+        private NtfsCachedName? _firstName;
 
-        public int NameCount => Names.Count;
+        private List<NtfsCachedName>? _extraNames;
+
+        public int NameCount => _firstName is null ? 0 : 1 + (_extraNames?.Count ?? 0);
+
+        public void AddName(NtfsCachedName name)
+        {
+            if (_firstName is null)
+            {
+                _firstName = name;
+                return;
+            }
+
+            (_extraNames ??= []).Add(name);
+        }
 
         public NtfsCachedName GetName(int index)
         {
-            return Names[index];
+            if (_firstName is null || index < 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(index));
+            }
+
+            if (index == 0)
+            {
+                return _firstName;
+            }
+
+            if (_extraNames is null)
+            {
+                throw new ArgumentOutOfRangeException(nameof(index));
+            }
+
+            return _extraNames[index - 1];
         }
     }
 
