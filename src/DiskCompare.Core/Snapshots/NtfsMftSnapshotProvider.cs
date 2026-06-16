@@ -486,11 +486,9 @@ internal sealed class NtfsMftSnapshotProvider
     private static IndexedSnapshot BuildIndexedSnapshot(Dictionary<long, NtfsRecordEntry> entries)
     {
         var directDirectorySizes = new Dictionary<long, long>();
+        var directDirectoryFileCounts = new Dictionary<long, int>();
         var directoryChildren = new Dictionary<long, List<long>>();
         var directoryPathCache = new Dictionary<long, string?> { [RootDirectoryRecordNumber] = string.Empty };
-        var visiting = new HashSet<long>();
-        long totalBytes = 0;
-        var fileCount = 0;
 
         foreach (var entry in entries.Values)
         {
@@ -528,19 +526,25 @@ internal sealed class NtfsMftSnapshotProvider
                     continue;
                 }
 
-                visiting.Clear();
-                if (ResolveDirectoryPath(name.ParentRecordNumber, entries, directoryPathCache, visiting) is null)
-                {
-                    continue;
-                }
-
                 directDirectorySizes[name.ParentRecordNumber] = directDirectorySizes.GetValueOrDefault(name.ParentRecordNumber) + entry.Size;
-                totalBytes += entry.Size;
-                fileCount++;
+                directDirectoryFileCounts[name.ParentRecordNumber] = directDirectoryFileCounts.GetValueOrDefault(name.ParentRecordNumber) + 1;
             }
         }
 
         var folderSizes = BuildFolderSizes(entries, directDirectorySizes, directoryChildren, directoryPathCache);
+        long totalBytes = 0;
+        var fileCount = 0;
+        foreach (var (directoryRecordNumber, size) in directDirectorySizes)
+        {
+            if (!IsReachableDirectory(directoryRecordNumber, directoryPathCache))
+            {
+                continue;
+            }
+
+            totalBytes += size;
+            fileCount += directDirectoryFileCounts.GetValueOrDefault(directoryRecordNumber);
+        }
+
         var folders = folderSizes.Count == 0
             ? []
             : folderSizes.Values
@@ -548,6 +552,11 @@ internal sealed class NtfsMftSnapshotProvider
                 .ToArray();
 
         return new IndexedSnapshot(folders, totalBytes, fileCount);
+    }
+
+    private static bool IsReachableDirectory(long directoryRecordNumber, Dictionary<long, string?> directoryPathCache)
+    {
+        return directoryPathCache.TryGetValue(directoryRecordNumber, out var path) && path is not null;
     }
 
     private static Dictionary<string, FolderSizeEntryBuilder> BuildFolderSizes(
@@ -559,26 +568,6 @@ internal sealed class NtfsMftSnapshotProvider
         var folderSizes = new Dictionary<string, FolderSizeEntryBuilder>(StringComparer.OrdinalIgnoreCase);
         var subtreeSizeCache = new Dictionary<long, long>();
         var visiting = new HashSet<long>();
-
-        foreach (var directoryRecordNumber in directoryPathCache.Keys.ToArray())
-        {
-            if (directoryRecordNumber == RootDirectoryRecordNumber)
-            {
-                continue;
-            }
-
-            var path = directoryPathCache[directoryRecordNumber];
-            if (string.IsNullOrEmpty(path))
-            {
-                continue;
-            }
-
-            var size = GetSubtreeSize(directoryRecordNumber, directDirectorySizes, directoryChildren, subtreeSizeCache, visiting);
-            if (size > 0)
-            {
-                folderSizes[path] = new FolderSizeEntryBuilder(path, GetName(path)) { Size = size };
-            }
-        }
 
         foreach (var directoryRecordNumber in directDirectorySizes.Keys)
         {
@@ -593,8 +582,17 @@ internal sealed class NtfsMftSnapshotProvider
             }
 
             visiting.Clear();
-            var path = ResolveDirectoryPath(directoryRecordNumber, entries, directoryPathCache, visiting);
-            if (string.IsNullOrEmpty(path))
+            _ = ResolveDirectoryPath(directoryRecordNumber, entries, directoryPathCache, visiting);
+        }
+
+        foreach (var (directoryRecordNumber, path) in directoryPathCache.ToArray())
+        {
+            if (directoryRecordNumber == RootDirectoryRecordNumber || string.IsNullOrEmpty(path))
+            {
+                continue;
+            }
+
+            if (!entries.TryGetValue(directoryRecordNumber, out var entry) || !entry.IsDirectory)
             {
                 continue;
             }
