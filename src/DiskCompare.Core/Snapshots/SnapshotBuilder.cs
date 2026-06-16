@@ -72,39 +72,24 @@ public sealed class SnapshotBuilder
 
             try
             {
-                foreach (var directory in new DirectoryInfo(current.FullPath).EnumerateDirectories())
+                foreach (var item in new DirectoryInfo(current.FullPath).EnumerateFileSystemInfos())
                 {
                     cancellationToken.ThrowIfCancellationRequested();
 
                     try
                     {
-                        if ((directory.Attributes & FileAttributes.ReparsePoint) == FileAttributes.ReparsePoint)
+                        if ((item.Attributes & FileAttributes.ReparsePoint) == FileAttributes.ReparsePoint)
                         {
                             continue;
                         }
 
-                        stack.Push((directory.FullName, GetChildRelativePath(current.RelativePath, directory.Name)));
-                    }
-                    catch (Exception ex) when (IsRecoverable(ex))
-                    {
-                        errors.Add(new ScanError(directory.FullName, ex.Message));
-                    }
-                }
-            }
-            catch (Exception ex) when (IsRecoverable(ex))
-            {
-                errors.Add(new ScanError(current.FullPath, ex.Message));
-            }
+                        if ((item.Attributes & FileAttributes.Directory) == FileAttributes.Directory)
+                        {
+                            stack.Push((item.FullName, GetChildRelativePath(current.RelativePath, item.Name)));
+                            continue;
+                        }
 
-            try
-            {
-                foreach (var file in new DirectoryInfo(current.FullPath).EnumerateFiles())
-                {
-                    cancellationToken.ThrowIfCancellationRequested();
-
-                    try
-                    {
-                        if ((file.Attributes & FileAttributes.ReparsePoint) == FileAttributes.ReparsePoint)
+                        if (item is not FileInfo file)
                         {
                             continue;
                         }
@@ -120,7 +105,7 @@ public sealed class SnapshotBuilder
                     }
                     catch (Exception ex) when (IsRecoverable(ex))
                     {
-                        errors.Add(new ScanError(file.FullName, ex.Message));
+                        errors.Add(new ScanError(item.FullName, ex.Message));
                     }
                 }
             }
