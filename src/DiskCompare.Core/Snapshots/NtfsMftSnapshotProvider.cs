@@ -694,12 +694,29 @@ internal sealed class NtfsMftSnapshotProvider
     {
         try
         {
-            var cache = CreateCache(driveRoot, fileSystem, volumeSerialNumber, journal, entries);
-            _ = Task.Run(() => SaveCache(cache, progress));
+            _ = Task.Run(() => CreateAndSaveCache(driveRoot, fileSystem, volumeSerialNumber, journal, entries, progress));
         }
         catch (Exception ex) when (IsExpectedFastIndexFailure(ex))
         {
-            progress?.Report(new SnapshotProgress($"NTFS 索引缓存准备失败，已跳过: {ex.Message}", 0, 0, 0, "NTFS MFT 快速索引"));
+            progress?.Report(new SnapshotProgress($"NTFS 索引缓存后台任务启动失败，已跳过: {ex.Message}", 0, 0, 0, "NTFS MFT 快速索引"));
+        }
+    }
+
+    private static void CreateAndSaveCache(
+        string driveRoot,
+        string fileSystem,
+        uint volumeSerialNumber,
+        UsnJournalData journal,
+        Dictionary<long, NtfsRecordEntry> entries,
+        IProgress<SnapshotProgress>? progress)
+    {
+        try
+        {
+            SaveCache(CreateCache(driveRoot, fileSystem, volumeSerialNumber, journal, entries), progress);
+        }
+        catch (Exception ex) when (IsExpectedFastIndexFailure(ex))
+        {
+            progress?.Report(new SnapshotProgress($"NTFS 索引缓存保存失败，已跳过: {ex.Message}", 0, 0, 0, "NTFS MFT 快速索引"));
         }
     }
 
