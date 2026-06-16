@@ -623,16 +623,7 @@ internal sealed class NtfsMftSnapshotProvider
         for (var index = 0; index < entry.NameCount; index++)
         {
             var name = entry.GetName(index);
-            if (IsPreferredVisibleName(name))
-            {
-                AddFileAggregate(entry, name, directDirectoryAggregates);
-            }
-        }
-
-        for (var index = 0; index < entry.NameCount; index++)
-        {
-            var name = entry.GetName(index);
-            if (IsSecondaryVisibleName(name))
+            if (IsVisibleName(name))
             {
                 AddFileAggregate(entry, name, directDirectoryAggregates);
             }
@@ -689,6 +680,11 @@ internal sealed class NtfsMftSnapshotProvider
     private static bool IsSecondaryVisibleName(NtfsCachedName name)
     {
         return name.NamespaceId is not 1 and not 2 && name.Name is not "." and not "..";
+    }
+
+    private static bool IsVisibleName(NtfsCachedName name)
+    {
+        return name.NamespaceId is not 2 && name.Name is not "." and not "..";
     }
 
     private static long GetSubtreeSize(
