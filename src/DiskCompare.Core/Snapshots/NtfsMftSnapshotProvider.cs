@@ -439,7 +439,7 @@ internal sealed class NtfsMftSnapshotProvider
             if (type == AttributeTypeFileName && !nonResident)
             {
                 var value = GetResidentValue(attribute, length);
-                var fileName = TryParseFileName(value);
+                var fileName = TryParseFileName(value, entry.IsDirectory);
                 if (fileName is not null)
                 {
                     entry.Names.Add(fileName);
@@ -964,7 +964,7 @@ internal sealed class NtfsMftSnapshotProvider
         return attribute.Slice(valueOffset, valueLength);
     }
 
-    private static NtfsCachedName? TryParseFileName(ReadOnlySpan<byte> value)
+    private static NtfsCachedName? TryParseFileName(ReadOnlySpan<byte> value, bool keepNameText)
     {
         if (value.Length < 66)
         {
@@ -979,8 +979,8 @@ internal sealed class NtfsMftSnapshotProvider
             return null;
         }
 
-        var name = Encoding.Unicode.GetString(value.Slice(66, nameByteLength));
-        if (string.IsNullOrWhiteSpace(name))
+        var nameBytes = value.Slice(66, nameByteLength);
+        if (IsBlankName(nameBytes))
         {
             return null;
         }
@@ -989,7 +989,22 @@ internal sealed class NtfsMftSnapshotProvider
         var lastWriteTime = SafeFileTime(BinaryPrimitives.ReadInt64LittleEndian(value.Slice(16, 8)));
         var realSize = Math.Max(0, BinaryPrimitives.ReadInt64LittleEndian(value.Slice(48, 8)));
         var attributes = (FileAttributes)BinaryPrimitives.ReadUInt32LittleEndian(value.Slice(56, 4));
+        var name = keepNameText ? Encoding.Unicode.GetString(nameBytes) : string.Empty;
         return new NtfsCachedName(parentRecordNumber, name, namespaceId, attributes, lastWriteTime, realSize);
+    }
+
+    private static bool IsBlankName(ReadOnlySpan<byte> utf16Name)
+    {
+        for (var index = 0; index + 1 < utf16Name.Length; index += 2)
+        {
+            var codeUnit = BinaryPrimitives.ReadUInt16LittleEndian(utf16Name.Slice(index, 2));
+            if (!char.IsWhiteSpace((char)codeUnit))
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private static long GetDataSize(Span<byte> attribute, int attributeLength, bool nonResident)
