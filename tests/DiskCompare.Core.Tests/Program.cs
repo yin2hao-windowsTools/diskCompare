@@ -12,10 +12,13 @@ var tests = new (string Name, Action Run)[]
     ("Snapshot store rejects unsafe output paths", SnapshotStoreRejectsUnsafeOutputPaths),
     ("Snapshot store rejects unsafe input paths", SnapshotStoreRejectsUnsafeInputPaths),
     ("Snapshot store rejects invalid loaded entries", SnapshotStoreRejectsInvalidLoadedEntries),
+    ("Snapshot store rejects invalid aggregate file count", SnapshotStoreRejectsInvalidAggregateFileCount),
     ("Snapshot store rejects oversized compressed files", SnapshotStoreRejectsOversizedCompressedFiles),
+    ("Snapshot supports aggregate file count override", SnapshotSupportsAggregateFileCountOverride),
     ("Default data paths stay under application root", DefaultDataPathsStayUnderApplicationRoot),
     ("Snapshot comparer handles mixed separators without parent split", SnapshotComparerHandlesMixedSeparators),
     ("Snapshot comparer uses folder aggregates when present", SnapshotComparerUsesFolderAggregatesWhenPresent),
+    ("Snapshot comparer uses aggregate root total without folders", SnapshotComparerUsesAggregateRootTotalWithoutFolders),
     ("Snapshot comparer mixes legacy files and folder aggregates", SnapshotComparerMixesLegacyFilesAndFolderAggregates),
     ("Application updater prefers portable archive outside Program Files", ApplicationUpdaterPrefersPortableArchiveOutsideProgramFiles),
     ("Application updater recognizes executable installer package", ApplicationUpdaterRecognizesExecutableInstallerPackage),
@@ -23,7 +26,8 @@ var tests = new (string Name, Action Run)[]
     (".NET launcher detects required desktop runtime major version", RuntimeRequirementDetectsRequiredDesktopRuntimeMajorVersion),
     (".NET launcher rejects missing desktop runtime major version", RuntimeRequirementRejectsMissingDesktopRuntimeMajorVersion),
     ("NTFS index cache stores unique files and loads newest USN", NtfsIndexCacheStoresUniqueFilesAndLoadsNewestUsn),
-    ("NTFS index cache ignores malicious counts", NtfsIndexCacheIgnoresMaliciousCounts)
+    ("NTFS index cache ignores malicious counts", NtfsIndexCacheIgnoresMaliciousCounts),
+    ("NTFS MFT aggregate snapshot rolls folder sizes upward", NtfsMftAggregateSnapshotRollsFolderSizesUpward)
 };
 
 foreach (var test in tests)
@@ -192,6 +196,53 @@ static void SnapshotStoreRejectsInvalidLoadedEntries()
     }
 }
 
+static void SnapshotStoreRejectsInvalidAggregateFileCount()
+{
+    var tempRoot = CreateOwnedTempDirectory();
+
+    try
+    {
+        var invalid = new Snapshot(
+            "T:\\",
+            "Test",
+            "NTFS",
+            DateTime.UtcNow,
+            [],
+            [],
+            [new FolderSizeEntry("Media", "Media", 1)],
+            1,
+            -1);
+        var store = new SnapshotStore(tempRoot);
+        var path = store.CreateDefaultSnapshotPath(invalid);
+        store.SaveAsync(invalid, path).GetAwaiter().GetResult();
+
+        AssertThrows<InvalidDataException>(
+            () => store.LoadAsync(path).GetAwaiter().GetResult(),
+            "Invalid aggregate file count");
+
+        var invalidTotal = new Snapshot(
+            "T:\\",
+            "Test",
+            "NTFS",
+            DateTime.UtcNow,
+            [],
+            [],
+            [new FolderSizeEntry("Media", "Media", 1)],
+            -1,
+            1);
+        var totalPath = store.CreateDefaultSnapshotPath(invalidTotal);
+        store.SaveAsync(invalidTotal, totalPath).GetAwaiter().GetResult();
+
+        AssertThrows<InvalidDataException>(
+            () => store.LoadAsync(totalPath).GetAwaiter().GetResult(),
+            "Invalid aggregate total size");
+    }
+    finally
+    {
+        DeleteOwnedTempDirectory(tempRoot);
+    }
+}
+
 static void SnapshotStoreRejectsOversizedCompressedFiles()
 {
     var tempRoot = CreateOwnedTempDirectory();
@@ -207,6 +258,37 @@ static void SnapshotStoreRejectsOversizedCompressedFiles()
         AssertThrows<InvalidDataException>(
             () => new SnapshotStore(tempRoot).LoadAsync(path).GetAwaiter().GetResult(),
             "Oversized compressed snapshot");
+    }
+    finally
+    {
+        DeleteOwnedTempDirectory(tempRoot);
+    }
+}
+
+static void SnapshotSupportsAggregateFileCountOverride()
+{
+    var tempRoot = CreateOwnedTempDirectory();
+
+    try
+    {
+        var snapshot = new Snapshot(
+            "T:\\",
+            "Test",
+            "NTFS",
+            DateTime.UtcNow,
+            [],
+            [],
+            [new FolderSizeEntry("Media", "Media", 42)],
+            42,
+            12);
+
+        var store = new SnapshotStore(tempRoot);
+        var path = store.CreateDefaultSnapshotPath(snapshot);
+        store.SaveAsync(snapshot, path).GetAwaiter().GetResult();
+        var loaded = store.LoadAsync(path).GetAwaiter().GetResult();
+
+        AssertEqual(12, loaded.FileCount, "Aggregate snapshot file count");
+        AssertEqual(42L, loaded.TotalBytes, "Aggregate snapshot total bytes");
     }
     finally
     {
@@ -284,6 +366,35 @@ static void SnapshotComparerUsesFolderAggregatesWhenPresent()
     AssertEqual(10, Find(comparison.Root, "Media").DeltaBytes, "Aggregate media delta");
     AssertEqual(50, Find(Find(comparison.Root, "Media"), "Video").DeltaBytes, "Aggregate video delta");
     AssertEqual(30, Find(comparison.Root, "New").DeltaBytes, "Aggregate new delta");
+}
+
+static void SnapshotComparerUsesAggregateRootTotalWithoutFolders()
+{
+    var before = new Snapshot(
+        "T:\\",
+        "Test",
+        "NTFS",
+        DateTime.UtcNow,
+        [],
+        [],
+        [],
+        42,
+        2);
+    var now = new Snapshot(
+        "T:\\",
+        "Test",
+        "NTFS",
+        DateTime.UtcNow,
+        [],
+        [],
+        [],
+        50,
+        3);
+
+    var comparison = new SnapshotComparer().Compare(before, now);
+    AssertEqual(42L, comparison.Snapshot.TotalBytes, "Aggregate root-only snapshot total");
+    AssertEqual(2, comparison.Snapshot.FileCount, "Aggregate root-only snapshot file count");
+    AssertEqual(8L, comparison.DeltaBytes, "Aggregate root-only delta");
 }
 
 static void SnapshotComparerMixesLegacyFilesAndFolderAggregates()
@@ -416,6 +527,58 @@ static void NtfsIndexCacheIgnoresMaliciousCounts()
     {
         DeleteOwnedTempDirectory(tempRoot);
     }
+}
+
+static void NtfsMftAggregateSnapshotRollsFolderSizesUpward()
+{
+    var now = DateTime.UtcNow;
+    var snapshot = NtfsMftSnapshotProvider.CreateSnapshotFromIndexCache(new NtfsIndexCache(
+        NtfsIndexCache.CurrentSchemaVersion,
+        "T:\\",
+        "NTFS",
+        0x1234ABCD,
+        99,
+        300,
+        1,
+        now,
+        [
+            new NtfsCachedRecord(
+                5,
+                IsDirectory: true,
+                DataSize: 0,
+                FileNameSize: 0,
+                [new NtfsCachedName(5, ".", 1, FileAttributes.Directory, now, 0)]),
+            new NtfsCachedRecord(
+                24,
+                IsDirectory: true,
+                DataSize: 0,
+                FileNameSize: 0,
+                [new NtfsCachedName(5, "Media", 1, FileAttributes.Directory, now, 0)]),
+            new NtfsCachedRecord(
+                25,
+                IsDirectory: true,
+                DataSize: 0,
+                FileNameSize: 0,
+                [new NtfsCachedName(24, "Video", 1, FileAttributes.Directory, now, 0)]),
+            new NtfsCachedRecord(
+                26,
+                IsDirectory: false,
+                DataSize: 10,
+                FileNameSize: 10,
+                [new NtfsCachedName(24, "cover.jpg", 1, FileAttributes.Archive, now, 10)]),
+            new NtfsCachedRecord(
+                27,
+                IsDirectory: false,
+                DataSize: 90,
+                FileNameSize: 90,
+                [new NtfsCachedName(25, "clip.mp4", 1, FileAttributes.Archive, now, 90)])
+        ]));
+
+    AssertEqual(0, snapshot.Files.Count, "Aggregate MFT snapshot omits file entries");
+    AssertEqual(2, snapshot.FileCount, "Aggregate MFT file count");
+    AssertEqual(100L, snapshot.TotalBytes, "Aggregate MFT total bytes");
+    AssertEqual(100L, snapshot.FolderSizes.Single(folder => folder.RelativePath == "Media").Size, "Parent folder size");
+    AssertEqual(90L, snapshot.FolderSizes.Single(folder => folder.RelativePath == Path.Combine("Media", "Video")).Size, "Child folder size");
 }
 
 static NtfsIndexCache CreateCache(long nextUsn)
