@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.Collections.Specialized;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
@@ -25,9 +26,13 @@ public partial class MainWindow : Window
     private readonly ObservableCollection<DriveViewModel> _drives = [];
     private readonly ObservableCollection<FolderDeltaViewModel> _treeNodes = [];
     private readonly ObservableCollection<FolderDeltaViewModel> _largestChanges = [];
+    private readonly ObservableCollection<ScanLogEntryViewModel> _scanLogEntries = [];
+    private readonly HashSet<string> _scanLogEntryKeys = [];
 
     private Snapshot? _loadedSnapshot;
     private CancellationTokenSource? _scanCancellation;
+    private LogWindow? _logWindow;
+    private int _nextLogEntryNumber = 1;
     private bool _updateInProgress;
 
     public MainWindow()
@@ -36,6 +41,8 @@ public partial class MainWindow : Window
         DriveComboBox.ItemsSource = _drives;
         DeltaTreeView.DataContext = _treeNodes;
         LargestChangesListView.DataContext = _largestChanges;
+        _scanLogEntries.CollectionChanged += ScanLogEntries_CollectionChanged;
+        UpdateScanLogButton();
         RefreshDrives();
     }
 
@@ -69,10 +76,11 @@ public partial class MainWindow : Window
             $"正在创建 {drive.RootPath} 快照...",
             async token =>
             {
-                var snapshot = await CreateSnapshotAsync(drive.RootPath, token);
+                var snapshot = await CreateSnapshotAsync(drive.RootPath, "新建快照", token);
                 var filePath = _snapshotStore.CreateDefaultSnapshotPath(snapshot);
                 await _snapshotStore.SaveAsync(snapshot, filePath, token);
                 _loadedSnapshot = snapshot;
+                AddSnapshotErrors(snapshot.Errors, "新建快照");
                 UpdateSnapshotInfo(filePath);
                 ClearComparison();
                 StatusTextBlock.Text = $"快照已保存: {filePath}";
@@ -96,6 +104,7 @@ public partial class MainWindow : Window
         try
         {
             _loadedSnapshot = await _snapshotStore.LoadAsync(dialog.FileName);
+            ReplaceScanLog(_loadedSnapshot.Errors, "已加载快照");
             UpdateSnapshotInfo(dialog.FileName);
             ClearComparison();
             SelectDrive(_loadedSnapshot.DriveRoot);
@@ -131,7 +140,8 @@ public partial class MainWindow : Window
             $"正在扫描 {driveRoot} 当前状态...",
             async token =>
             {
-                var current = await CreateSnapshotAsync(driveRoot, token);
+                var current = await CreateSnapshotAsync(driveRoot, "当前磁盘扫描", token);
+                AddSnapshotErrors(current.Errors, "当前磁盘扫描");
                 var comparison = _snapshotComparer.Compare(_loadedSnapshot, current, largestChangeCount: 200);
                 ShowComparison(comparison);
                 StatusTextBlock.Text = "对比完成";
@@ -142,6 +152,22 @@ public partial class MainWindow : Window
     {
         _scanCancellation?.Cancel();
         StatusTextBlock.Text = "正在取消...";
+    }
+
+    private void OpenLog_Click(object sender, RoutedEventArgs e)
+    {
+        if (_logWindow is { IsVisible: true })
+        {
+            _logWindow.Activate();
+            return;
+        }
+
+        _logWindow = new LogWindow(_scanLogEntries)
+        {
+            Owner = this
+        };
+        _logWindow.Closed += (_, _) => _logWindow = null;
+        _logWindow.Show();
     }
 
     private void OpenSnapshotFolder_Click(object sender, RoutedEventArgs e)
@@ -464,10 +490,22 @@ public partial class MainWindow : Window
 
     private async Task<Snapshot> CreateSnapshotAsync(string driveRoot, CancellationToken cancellationToken)
     {
+        return await CreateSnapshotAsync(driveRoot, "当前扫描", cancellationToken);
+    }
+
+    private async Task<Snapshot> CreateSnapshotAsync(
+        string driveRoot,
+        string logSource,
+        CancellationToken cancellationToken)
+    {
         var progress = new Progress<SnapshotProgress>(value =>
         {
             var mode = string.IsNullOrWhiteSpace(value.Mode) ? "扫描" : value.Mode;
             ProgressTextBlock.Text = $"{mode}\n{FormatBytes(value.BytesScanned)} / {value.FilesScanned:N0} 个文件 / {value.ErrorCount:N0} 个错误\n{value.CurrentPath}";
+            if (value.LatestError is not null)
+            {
+                AddScanLogEntry(value.LatestError, logSource);
+            }
         });
 
         return await _snapshotBuilder.CreateAsync(driveRoot, progress, cancellationToken);
@@ -481,6 +519,7 @@ public partial class MainWindow : Window
         }
 
         _scanCancellation = new CancellationTokenSource();
+        ClearScanLog();
         SetBusy(true);
         StatusTextBlock.Text = startingStatus;
         ProgressTextBlock.Text = startingStatus;
@@ -563,6 +602,63 @@ public partial class MainWindow : Window
         TreeHintTextBlock.Text = string.Empty;
         _treeNodes.Clear();
         _largestChanges.Clear();
+    }
+
+    private void ScanLogEntries_CollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
+    {
+        UpdateScanLogButton();
+    }
+
+    private void UpdateScanLogButton()
+    {
+        OpenLogButton.Content = _scanLogEntries.Count == 0
+            ? "扫描日志"
+            : $"扫描日志 ({_scanLogEntries.Count:N0})";
+    }
+
+    private void ClearScanLog()
+    {
+        _nextLogEntryNumber = 1;
+        _scanLogEntryKeys.Clear();
+        _scanLogEntries.Clear();
+    }
+
+    private void ReplaceScanLog(IEnumerable<ScanError> errors, string source)
+    {
+        ClearScanLog();
+        AddSnapshotErrors(errors, source);
+    }
+
+    private void AddSnapshotErrors(IEnumerable<ScanError> errors, string source)
+    {
+        foreach (var error in errors)
+        {
+            AddScanLogEntry(error, source);
+        }
+    }
+
+    private void AddScanLogEntry(ScanError error, string source)
+    {
+        if (!_scanLogEntryKeys.Add(BuildScanLogEntryKey(error, source)))
+        {
+            return;
+        }
+
+        _scanLogEntries.Add(new ScanLogEntryViewModel(
+            _nextLogEntryNumber++,
+            DateTime.Now,
+            source,
+            error.Path,
+            error.Message));
+    }
+
+    private static string BuildScanLogEntryKey(ScanError error, string source)
+    {
+        return string.Join(
+            '\u001f',
+            source,
+            error.Path.ToUpperInvariant(),
+            error.Message);
     }
 
     private void ShowError(string title, Exception ex)
@@ -658,6 +754,32 @@ public sealed class DriveViewModel
     public string DisplayName { get; }
 
     public string Description { get; }
+}
+
+public sealed class ScanLogEntryViewModel
+{
+    public ScanLogEntryViewModel(int number, DateTime time, string source, string path, string message)
+    {
+        Number = number;
+        Time = time;
+        Source = source;
+        Path = path;
+        Message = message;
+    }
+
+    public int Number { get; }
+
+    public DateTime Time { get; }
+
+    public string TimeText => Time.ToString("HH:mm:ss", CultureInfo.CurrentCulture);
+
+    public string Source { get; }
+
+    public string Path { get; }
+
+    public string Message { get; }
+
+    public string DetailText => $"时间: {Time:yyyy-MM-dd HH:mm:ss}\n来源: {Source}\n路径: {Path}\n错误: {Message}";
 }
 
 public sealed class FolderDeltaViewModel

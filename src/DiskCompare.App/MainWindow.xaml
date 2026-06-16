@@ -163,6 +163,10 @@
                                 Click="Cancel_Click"
                                 Margin="0,8,0,0"
                                 IsEnabled="False" />
+                        <Button x:Name="OpenLogButton"
+                                Content="扫描日志"
+                                Click="OpenLog_Click"
+                                Margin="0,8,0,0" />
                     </StackPanel>
 
                     <StackPanel Grid.Row="2" Margin="0,22,0,0">

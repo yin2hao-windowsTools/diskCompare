@@ -1,0 +1,137 @@
+<Window x:Class="DiskCompare.App.LogWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="扫描日志"
+        Width="920"
+        Height="620"
+        MinWidth="720"
+        MinHeight="460"
+        WindowStartupLocation="CenterOwner"
+        Background="#F5F7FA">
+    <Window.Resources>
+        <Style TargetType="Button">
+            <Setter Property="MinHeight" Value="34" />
+            <Setter Property="Padding" Value="12,6" />
+            <Setter Property="Cursor" Value="Hand" />
+        </Style>
+    </Window.Resources>
+
+    <Grid Margin="18">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="14" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="14" />
+            <RowDefinition Height="132" />
+            <RowDefinition Height="14" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <Border Grid.Row="0"
+                Background="#FFFFFF"
+                BorderBrush="#D8DEE9"
+                BorderThickness="1"
+                CornerRadius="8"
+                Padding="16">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <StackPanel>
+                    <TextBlock Text="扫描日志"
+                               FontSize="20"
+                               FontWeight="SemiBold"
+                               Foreground="#0F172A" />
+                    <TextBlock x:Name="SummaryTextBlock"
+                               Text="当前扫描没有记录到错误。"
+                               Foreground="#64748B"
+                               Margin="0,4,0,0" />
+                </StackPanel>
+                <Button Grid.Column="1"
+                        Content="复制全部"
+                        Click="CopyAll_Click"
+                        VerticalAlignment="Center" />
+            </Grid>
+        </Border>
+
+        <Grid Grid.Row="2">
+            <Border Background="#FFFFFF"
+                    BorderBrush="#D8DEE9"
+                    BorderThickness="1"
+                    CornerRadius="8">
+                <DataGrid x:Name="LogDataGrid"
+                          AutoGenerateColumns="False"
+                          CanUserAddRows="False"
+                          CanUserDeleteRows="False"
+                          GridLinesVisibility="Horizontal"
+                          HeadersVisibility="Column"
+                          IsReadOnly="True"
+                          RowHeaderWidth="0"
+                          SelectionMode="Single"
+                          SelectionUnit="FullRow"
+                          BorderThickness="0">
+                    <DataGrid.Columns>
+                        <DataGridTextColumn Header="#"
+                                            Binding="{Binding Number}"
+                                            Width="56" />
+                        <DataGridTextColumn Header="时间"
+                                            Binding="{Binding TimeText}"
+                                            Width="96" />
+                        <DataGridTextColumn Header="来源"
+                                            Binding="{Binding Source}"
+                                            Width="120" />
+                        <DataGridTextColumn Header="路径"
+                                            Binding="{Binding Path}"
+                                            Width="2*" />
+                        <DataGridTextColumn Header="错误详情"
+                                            Binding="{Binding Message}"
+                                            Width="2*" />
+                    </DataGrid.Columns>
+                </DataGrid>
+            </Border>
+
+            <TextBlock x:Name="EmptyStateTextBlock"
+                       Text="当前扫描没有记录到错误。"
+                       HorizontalAlignment="Center"
+                       VerticalAlignment="Center"
+                       Foreground="#64748B" />
+        </Grid>
+
+        <Border Grid.Row="4"
+                Background="#FFFFFF"
+                BorderBrush="#D8DEE9"
+                BorderThickness="1"
+                CornerRadius="8"
+                Padding="12">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                </Grid.RowDefinitions>
+                <TextBlock Text="选中项详情"
+                           FontWeight="SemiBold"
+                           Foreground="#0F172A" />
+                <TextBox Grid.Row="1"
+                         Text="{Binding SelectedItem.DetailText, ElementName=LogDataGrid}"
+                         IsReadOnly="True"
+                         TextWrapping="Wrap"
+                         VerticalScrollBarVisibility="Auto"
+                         BorderThickness="0"
+                         Foreground="#334155"
+                         Margin="0,8,0,0" />
+            </Grid>
+        </Border>
+
+        <StackPanel Grid.Row="6"
+                    Orientation="Horizontal"
+                    HorizontalAlignment="Right">
+            <Button Content="复制选中项"
+                    Click="CopySelected_Click"
+                    Margin="0,0,10,0" />
+            <Button Content="关闭"
+                    Click="Close_Click"
+                    MinWidth="90" />
+        </StackPanel>
+    </Grid>
+</Window>
