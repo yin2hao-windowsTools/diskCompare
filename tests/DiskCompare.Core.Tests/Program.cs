@@ -31,7 +31,8 @@ var tests = new (string Name, Action Run)[]
     ("NTFS index cache factory preserves record data", NtfsIndexCacheFactoryPreservesRecordData),
     ("NTFS MFT aggregate snapshot rolls folder sizes upward", NtfsMftAggregateSnapshotRollsFolderSizesUpward),
     ("NTFS MFT aggregate snapshot ignores orphan files", NtfsMftAggregateSnapshotIgnoresOrphanFiles),
-    ("NTFS MFT aggregate snapshot keeps preferred names and skips reparse points", NtfsMftAggregateSnapshotKeepsPreferredNamesAndSkipsReparsePoints)
+    ("NTFS MFT aggregate snapshot keeps preferred names and skips reparse points", NtfsMftAggregateSnapshotKeepsPreferredNamesAndSkipsReparsePoints),
+    ("NTFS MFT aggregate snapshot accepts unnamed file records", NtfsMftAggregateSnapshotAcceptsUnnamedFileRecords)
 };
 
 foreach (var test in tests)
@@ -721,6 +722,44 @@ static void NtfsMftAggregateSnapshotKeepsPreferredNamesAndSkipsReparsePoints()
     AssertEqual(1, snapshot.FileCount, "Preferred MFT name file count");
     AssertEqual(10L, snapshot.TotalBytes, "Preferred MFT name total bytes");
     AssertEqual(10L, snapshot.FolderSizes.Single(folder => folder.RelativePath == "Media Library").Size, "Preferred directory name size");
+}
+
+static void NtfsMftAggregateSnapshotAcceptsUnnamedFileRecords()
+{
+    var now = DateTime.UtcNow;
+    var snapshot = NtfsMftSnapshotProvider.CreateSnapshotFromIndexCache(new NtfsIndexCache(
+        NtfsIndexCache.CurrentSchemaVersion,
+        "T:\\",
+        "NTFS",
+        0x1234ABCD,
+        99,
+        300,
+        1,
+        now,
+        [
+            new NtfsCachedRecord(
+                5,
+                IsDirectory: true,
+                DataSize: 0,
+                FileNameSize: 0,
+                [new NtfsCachedName(5, ".", 1, FileAttributes.Directory, now, 0)]),
+            new NtfsCachedRecord(
+                24,
+                IsDirectory: true,
+                DataSize: 0,
+                FileNameSize: 0,
+                [new NtfsCachedName(5, "Media", 1, FileAttributes.Directory, now, 0)]),
+            new NtfsCachedRecord(
+                25,
+                IsDirectory: false,
+                DataSize: 42,
+                FileNameSize: 42,
+                [new NtfsCachedName(24, string.Empty, 1, FileAttributes.Archive, now, 42)])
+        ]));
+
+    AssertEqual(1, snapshot.FileCount, "Unnamed MFT file count");
+    AssertEqual(42L, snapshot.TotalBytes, "Unnamed MFT total bytes");
+    AssertEqual(42L, snapshot.FolderSizes.Single(folder => folder.RelativePath == "Media").Size, "Unnamed MFT folder size");
 }
 
 static NtfsIndexCache CreateCache(long nextUsn)
