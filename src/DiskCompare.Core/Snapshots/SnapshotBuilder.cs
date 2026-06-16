@@ -48,19 +48,19 @@ public sealed class SnapshotBuilder
             progress?.Report(new SnapshotProgress($"NTFS 快速索引不可用，回退目录扫描: {fallbackReason}", 0, 0, 0, "目录扫描"));
         }
 
-        return CreateCore(driveRoot, progress, cancellationToken);
+        return CreateDirectorySnapshot(driveRoot, progress, cancellationToken);
     }
 
-    private static Snapshot CreateCore(
+    internal static Snapshot CreateDirectorySnapshot(
         string driveRoot,
         IProgress<SnapshotProgress>? progress,
         CancellationToken cancellationToken)
     {
         var root = EnsureTrailingSeparator(driveRoot);
         var folderSizes = new Dictionary<string, FolderSizeEntryBuilder>(StringComparer.OrdinalIgnoreCase);
-        var errors = new ConcurrentQueue<ScanError>();
-        var stack = new Stack<string>();
-        stack.Push(root);
+        var errors = new List<ScanError>();
+        var stack = new Stack<(string FullPath, string RelativePath)>();
+        stack.Push((root, string.Empty));
 
         var filesScanned = 0;
         long bytesScanned = 0;
@@ -70,39 +70,63 @@ public sealed class SnapshotBuilder
             cancellationToken.ThrowIfCancellationRequested();
             var current = stack.Pop();
 
-            foreach (var directory in EnumerateDirectories(current, errors))
+            try
             {
-                cancellationToken.ThrowIfCancellationRequested();
-                stack.Push(directory);
+                foreach (var directory in new DirectoryInfo(current.FullPath).EnumerateDirectories())
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+
+                    try
+                    {
+                        if ((directory.Attributes & FileAttributes.ReparsePoint) == FileAttributes.ReparsePoint)
+                        {
+                            continue;
+                        }
+
+                        stack.Push((directory.FullName, GetChildRelativePath(current.RelativePath, directory.Name)));
+                    }
+                    catch (Exception ex) when (IsRecoverable(ex))
+                    {
+                        errors.Add(new ScanError(directory.FullName, ex.Message));
+                    }
+                }
+            }
+            catch (Exception ex) when (IsRecoverable(ex))
+            {
+                errors.Add(new ScanError(current.FullPath, ex.Message));
             }
 
-            foreach (var filePath in EnumerateFiles(current, errors))
+            try
             {
-                cancellationToken.ThrowIfCancellationRequested();
-
-                try
+                foreach (var file in new DirectoryInfo(current.FullPath).EnumerateFiles())
                 {
-                    var info = new FileInfo(filePath);
-                    if ((info.Attributes & FileAttributes.ReparsePoint) == FileAttributes.ReparsePoint)
+                    cancellationToken.ThrowIfCancellationRequested();
+
+                    try
                     {
-                        continue;
+                        if ((file.Attributes & FileAttributes.ReparsePoint) == FileAttributes.ReparsePoint)
+                        {
+                            continue;
+                        }
+
+                        AddFolderSizes(folderSizes, current.RelativePath, file.Length);
+                        filesScanned++;
+                        bytesScanned += file.Length;
+
+                        if (filesScanned % ProgressInterval == 0)
+                        {
+                            progress?.Report(new SnapshotProgress(file.FullName, filesScanned, bytesScanned, errors.Count, "目录扫描"));
+                        }
                     }
-
-                    var relativePath = Path.GetRelativePath(root, info.FullName);
-                    var normalizedRelativePath = NormalizeRelativePath(relativePath);
-                    AddFolderSizes(folderSizes, normalizedRelativePath, info.Length);
-                    filesScanned++;
-                    bytesScanned += info.Length;
-
-                    if (filesScanned % ProgressInterval == 0)
+                    catch (Exception ex) when (IsRecoverable(ex))
                     {
-                        progress?.Report(new SnapshotProgress(info.FullName, filesScanned, bytesScanned, errors.Count, "目录扫描"));
+                        errors.Add(new ScanError(file.FullName, ex.Message));
                     }
                 }
-                catch (Exception ex) when (IsRecoverable(ex))
-                {
-                    errors.Enqueue(new ScanError(filePath, ex.Message));
-                }
+            }
+            catch (Exception ex) when (IsRecoverable(ex))
+            {
+                errors.Add(new ScanError(current.FullPath, ex.Message));
             }
         }
 
@@ -121,53 +145,6 @@ public sealed class SnapshotBuilder
                 .ToArray(),
             bytesScanned,
             filesScanned);
-    }
-
-    private static IEnumerable<string> EnumerateDirectories(string path, ConcurrentQueue<ScanError> errors)
-    {
-        try
-        {
-            var directories = new List<string>();
-            foreach (var directory in new DirectoryInfo(path).EnumerateDirectories())
-            {
-                try
-                {
-                    if ((directory.Attributes & FileAttributes.ReparsePoint) == FileAttributes.ReparsePoint)
-                    {
-                        continue;
-                    }
-
-                    directories.Add(directory.FullName);
-                }
-                catch (Exception ex) when (IsRecoverable(ex))
-                {
-                    errors.Enqueue(new ScanError(directory.FullName, ex.Message));
-                }
-            }
-
-            return directories;
-        }
-        catch (Exception ex) when (IsRecoverable(ex))
-        {
-            errors.Enqueue(new ScanError(path, ex.Message));
-            return Array.Empty<string>();
-        }
-    }
-
-    private static IEnumerable<string> EnumerateFiles(string path, ConcurrentQueue<ScanError> errors)
-    {
-        try
-        {
-            return new DirectoryInfo(path)
-                .EnumerateFiles()
-                .Select(static file => file.FullName)
-                .ToArray();
-        }
-        catch (Exception ex) when (IsRecoverable(ex))
-        {
-            errors.Enqueue(new ScanError(path, ex.Message));
-            return Array.Empty<string>();
-        }
     }
 
     private static string SafeGet(Func<string> valueFactory)
@@ -199,22 +176,23 @@ public sealed class SnapshotBuilder
             : fullPath + Path.DirectorySeparatorChar;
     }
 
-    private static string NormalizeRelativePath(string relativePath)
+    private static string GetChildRelativePath(string parentRelativePath, string childName)
     {
-        return relativePath.Replace(Path.AltDirectorySeparatorChar, Path.DirectorySeparatorChar);
+        return string.IsNullOrEmpty(parentRelativePath)
+            ? childName
+            : string.Concat(parentRelativePath, Path.DirectorySeparatorChar, childName);
     }
 
-    private static void AddFolderSizes(Dictionary<string, FolderSizeEntryBuilder> folderSizes, string fileRelativePath, long size)
+    private static void AddFolderSizes(Dictionary<string, FolderSizeEntryBuilder> folderSizes, string parentRelativePath, long size)
     {
-        var lastSeparator = fileRelativePath.LastIndexOf(Path.DirectorySeparatorChar);
-        if (lastSeparator <= 0)
+        if (string.IsNullOrEmpty(parentRelativePath))
         {
             return;
         }
 
-        for (var separatorIndex = lastSeparator; separatorIndex > 0;)
+        for (var separatorIndex = parentRelativePath.Length; separatorIndex > 0;)
         {
-            var path = fileRelativePath[..separatorIndex];
+            var path = parentRelativePath[..separatorIndex];
             AddFolderSize(folderSizes, path, size);
             var previousSeparator = path.LastIndexOf(Path.DirectorySeparatorChar);
             if (previousSeparator < 0)

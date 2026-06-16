@@ -20,6 +20,7 @@ var tests = new (string Name, Action Run)[]
     ("Snapshot comparer uses folder aggregates when present", SnapshotComparerUsesFolderAggregatesWhenPresent),
     ("Snapshot comparer uses aggregate root total without folders", SnapshotComparerUsesAggregateRootTotalWithoutFolders),
     ("Snapshot comparer mixes legacy files and folder aggregates", SnapshotComparerMixesLegacyFilesAndFolderAggregates),
+    ("Directory snapshot stores aggregate folder sizes", DirectorySnapshotStoresAggregateFolderSizes),
     ("Application updater prefers portable archive outside Program Files", ApplicationUpdaterPrefersPortableArchiveOutsideProgramFiles),
     ("Application updater recognizes executable installer package", ApplicationUpdaterRecognizesExecutableInstallerPackage),
     ("Application updater recognizes portable archive package", ApplicationUpdaterRecognizesPortableArchivePackage),
@@ -292,6 +293,7 @@ static void SnapshotSupportsAggregateFileCountOverride()
     }
     finally
     {
+        DeleteOwnedTempDirectoryContents(tempRoot);
         DeleteOwnedTempDirectory(tempRoot);
     }
 }
@@ -419,6 +421,34 @@ static void SnapshotComparerMixesLegacyFilesAndFolderAggregates()
     var comparison = new SnapshotComparer().Compare(before, now);
     AssertEqual(50, comparison.DeltaBytes, "Mixed root delta");
     AssertEqual(50, Find(Find(comparison.Root, "Media"), "Video").DeltaBytes, "Mixed video delta");
+}
+
+static void DirectorySnapshotStoresAggregateFolderSizes()
+{
+    var tempRoot = CreateOwnedTempDirectory();
+
+    try
+    {
+        var media = Path.Combine(tempRoot, "Media");
+        var video = Path.Combine(media, "Video");
+        Directory.CreateDirectory(video);
+        File.WriteAllBytes(Path.Combine(tempRoot, "root.bin"), new byte[5]);
+        File.WriteAllBytes(Path.Combine(media, "cover.jpg"), new byte[10]);
+        File.WriteAllBytes(Path.Combine(video, "clip.mp4"), new byte[90]);
+
+        var snapshot = SnapshotBuilder.CreateDirectorySnapshot(tempRoot, progress: null, CancellationToken.None);
+
+        AssertEqual(0, snapshot.Files.Count, "Directory snapshot omits file entries");
+        AssertEqual(3, snapshot.FileCount, "Directory snapshot file count");
+        AssertEqual(105L, snapshot.TotalBytes, "Directory snapshot total bytes");
+        AssertEqual(100L, snapshot.FolderSizes.Single(folder => folder.RelativePath == "Media").Size, "Directory parent folder size");
+        AssertEqual(90L, snapshot.FolderSizes.Single(folder => folder.RelativePath == Path.Combine("Media", "Video")).Size, "Directory child folder size");
+    }
+    finally
+    {
+        DeleteOwnedTempDirectoryContents(tempRoot);
+        DeleteOwnedTempDirectory(tempRoot);
+    }
 }
 
 static void ApplicationUpdaterPrefersPortableArchiveOutsideProgramFiles()
@@ -676,6 +706,31 @@ static void DeleteOwnedTempDirectory(string path)
         }
 
         Directory.Delete(fullPath, recursive: false);
+    }
+}
+
+static void DeleteOwnedTempDirectoryContents(string path)
+{
+    var fullPath = Path.GetFullPath(path);
+    var allowedRoot = Path.GetFullPath(Path.Combine(Path.GetTempPath(), "DiskCompare.Tests"));
+    if (!IsPathInsideDirectory(fullPath, allowedRoot))
+    {
+        throw new InvalidOperationException($"Refusing to clean path outside owned test temp directory: {fullPath}");
+    }
+
+    if (!Directory.Exists(fullPath))
+    {
+        return;
+    }
+
+    foreach (var file in Directory.EnumerateFiles(fullPath, "*", SearchOption.AllDirectories))
+    {
+        File.Delete(file);
+    }
+
+    foreach (var directory in Directory.EnumerateDirectories(fullPath, "*", SearchOption.AllDirectories).OrderByDescending(static item => item.Length))
+    {
+        Directory.Delete(directory, recursive: false);
     }
 }
 
