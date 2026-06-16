@@ -140,9 +140,7 @@ public sealed class SnapshotBuilder
             DateTime.UtcNow,
             [],
             errors.ToArray(),
-            folderSizes.Values
-                .Select(static folder => new FolderSizeEntry(folder.RelativePath, folder.Name, folder.Size))
-                .ToArray(),
+            ToFolderEntries(folderSizes),
             bytesScanned,
             filesScanned);
     }
@@ -219,6 +217,18 @@ public sealed class SnapshotBuilder
     {
         var separator = relativePath.LastIndexOf(Path.DirectorySeparatorChar);
         return separator < 0 ? relativePath : relativePath[(separator + 1)..];
+    }
+
+    private static FolderSizeEntry[] ToFolderEntries(Dictionary<string, FolderSizeEntryBuilder> folderSizes)
+    {
+        var folders = new FolderSizeEntry[folderSizes.Count];
+        var index = 0;
+        foreach (var folder in folderSizes.Values)
+        {
+            folders[index++] = new FolderSizeEntry(folder.RelativePath, folder.Name, folder.Size);
+        }
+
+        return folders;
     }
 
     private sealed class FolderSizeEntryBuilder(string relativePath, string name)

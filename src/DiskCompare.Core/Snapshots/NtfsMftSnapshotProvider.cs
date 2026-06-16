@@ -545,13 +545,7 @@ internal sealed class NtfsMftSnapshotProvider
             fileCount += directDirectoryFileCounts.GetValueOrDefault(directoryRecordNumber);
         }
 
-        var folders = folderSizes.Count == 0
-            ? []
-            : folderSizes.Values
-                .Select(static folder => new FolderSizeEntry(folder.RelativePath, folder.Name, folder.Size))
-                .ToArray();
-
-        return new IndexedSnapshot(folders, totalBytes, fileCount);
+        return new IndexedSnapshot(ToFolderEntries(folderSizes), totalBytes, fileCount);
     }
 
     private static bool IsReachableDirectory(long directoryRecordNumber, Dictionary<long, string?> directoryPathCache)
@@ -802,6 +796,18 @@ internal sealed class NtfsMftSnapshotProvider
     {
         var separator = relativePath.LastIndexOf(Path.DirectorySeparatorChar);
         return separator < 0 ? relativePath : relativePath[(separator + 1)..];
+    }
+
+    private static FolderSizeEntry[] ToFolderEntries(Dictionary<string, FolderSizeEntryBuilder> folderSizes)
+    {
+        var folders = new FolderSizeEntry[folderSizes.Count];
+        var index = 0;
+        foreach (var folder in folderSizes.Values)
+        {
+            folders[index++] = new FolderSizeEntry(folder.RelativePath, folder.Name, folder.Size);
+        }
+
+        return folders;
     }
 
     private static ReadOnlySpan<byte> GetResidentValue(Span<byte> attribute, int attributeLength)
