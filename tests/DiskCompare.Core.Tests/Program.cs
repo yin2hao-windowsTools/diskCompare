@@ -28,6 +28,7 @@ var tests = new (string Name, Action Run)[]
     (".NET launcher rejects missing desktop runtime major version", RuntimeRequirementRejectsMissingDesktopRuntimeMajorVersion),
     ("NTFS index cache stores unique files and loads newest USN", NtfsIndexCacheStoresUniqueFilesAndLoadsNewestUsn),
     ("NTFS index cache ignores malicious counts", NtfsIndexCacheIgnoresMaliciousCounts),
+    ("NTFS index cache factory preserves record data", NtfsIndexCacheFactoryPreservesRecordData),
     ("NTFS MFT aggregate snapshot rolls folder sizes upward", NtfsMftAggregateSnapshotRollsFolderSizesUpward)
 };
 
@@ -557,6 +558,21 @@ static void NtfsIndexCacheIgnoresMaliciousCounts()
     {
         DeleteOwnedTempDirectory(tempRoot);
     }
+}
+
+static void NtfsIndexCacheFactoryPreservesRecordData()
+{
+    var cache = CreateCache(nextUsn: 300);
+    var rebuilt = NtfsMftSnapshotProvider.CreateIndexCacheForTest(cache);
+
+    AssertEqual(cache.DriveRoot, rebuilt.DriveRoot, "Rebuilt cache drive");
+    AssertEqual(cache.FileSystem, rebuilt.FileSystem, "Rebuilt cache file system");
+    AssertEqual(cache.VolumeSerialNumber, rebuilt.VolumeSerialNumber, "Rebuilt cache serial");
+    AssertEqual(cache.UsnJournalId, rebuilt.UsnJournalId, "Rebuilt cache journal");
+    AssertEqual(cache.NextUsn, rebuilt.NextUsn, "Rebuilt cache next USN");
+    AssertEqual(cache.Records.Length, rebuilt.Records.Length, "Rebuilt cache record count");
+    AssertEqual(cache.Records[0].RecordNumber, rebuilt.Records[0].RecordNumber, "Rebuilt cache record number");
+    AssertEqual(cache.Records[0].Names[0].Name, rebuilt.Records[0].Names[0].Name, "Rebuilt cache name");
 }
 
 static void NtfsMftAggregateSnapshotRollsFolderSizesUpward()

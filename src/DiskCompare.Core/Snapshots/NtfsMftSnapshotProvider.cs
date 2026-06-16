@@ -63,6 +63,16 @@ internal sealed class NtfsMftSnapshotProvider
             indexedSnapshot.FileCount);
     }
 
+    internal static NtfsIndexCache CreateIndexCacheForTest(NtfsIndexCache cache)
+    {
+        return CreateCache(
+            cache.DriveRoot,
+            cache.FileSystem,
+            cache.VolumeSerialNumber,
+            new UsnJournalData(cache.UsnJournalId, cache.LowestValidUsn, cache.NextUsn, cache.LowestValidUsn),
+            ToEntries(cache));
+    }
+
     private static Snapshot Create(
         string driveRoot,
         IProgress<SnapshotProgress>? progress,
@@ -126,7 +136,7 @@ internal sealed class NtfsMftSnapshotProvider
         var indexedSnapshot = BuildIndexedSnapshot(entries);
         if (volumeSerialNumber is not null && journal is not null)
         {
-            TrySaveCache(driveRoot, format, volumeSerialNumber.Value, journal, entries, progress);
+            QueueSaveCache(driveRoot, format, volumeSerialNumber.Value, journal, entries, progress);
         }
 
         progress?.Report(new SnapshotProgress("NTFS MFT 快速索引完成", indexedSnapshot.FileCount, indexedSnapshot.TotalBytes, 0, "NTFS MFT 快速索引"));
@@ -188,7 +198,7 @@ internal sealed class NtfsMftSnapshotProvider
             }
 
             var indexedSnapshot = BuildIndexedSnapshot(entries);
-            TrySaveCache(driveRoot, fileSystem, volumeSerialNumber, journal, entries, progress);
+            QueueSaveCache(driveRoot, fileSystem, volumeSerialNumber, journal, entries, progress);
             progress?.Report(new SnapshotProgress("NTFS USN 增量索引完成", indexedSnapshot.FileCount, indexedSnapshot.TotalBytes, 0, "NTFS USN 增量索引"));
 
             return new Snapshot(
@@ -674,7 +684,7 @@ internal sealed class NtfsMftSnapshotProvider
         return entries;
     }
 
-    private static void TrySaveCache(
+    private static void QueueSaveCache(
         string driveRoot,
         string fileSystem,
         uint volumeSerialNumber,
@@ -684,34 +694,55 @@ internal sealed class NtfsMftSnapshotProvider
     {
         try
         {
-            var records = new List<NtfsCachedRecord>(entries.Count);
-            foreach (var entry in entries.Values)
-            {
-                records.Add(new NtfsCachedRecord(
-                    entry.RecordNumber,
-                    entry.IsDirectory,
-                    entry.DataSize,
-                    entry.FileNameSize,
-                    entry.Names.Select(static name => new NtfsCachedName(
-                        name.ParentRecordNumber,
-                        name.Name,
-                        name.NamespaceId,
-                        name.Attributes,
-                        name.LastWriteTimeUtc,
-                        name.RealSize)).ToArray()));
-            }
+            var cache = CreateCache(driveRoot, fileSystem, volumeSerialNumber, journal, entries);
+            _ = Task.Run(() => SaveCache(cache, progress));
+        }
+        catch (Exception ex) when (IsExpectedFastIndexFailure(ex))
+        {
+            progress?.Report(new SnapshotProgress($"NTFS 索引缓存准备失败，已跳过: {ex.Message}", 0, 0, 0, "NTFS MFT 快速索引"));
+        }
+    }
 
-            var cache = new NtfsIndexCache(
-                NtfsIndexCache.CurrentSchemaVersion,
-                EnsureTrailingSeparator(driveRoot),
-                fileSystem,
-                volumeSerialNumber,
-                journal.UsnJournalId,
-                journal.NextUsn,
-                journal.LowestValidUsn,
-                DateTime.UtcNow,
-                records.ToArray());
+    private static NtfsIndexCache CreateCache(
+        string driveRoot,
+        string fileSystem,
+        uint volumeSerialNumber,
+        UsnJournalData journal,
+        Dictionary<long, NtfsRecordEntry> entries)
+    {
+        var records = new List<NtfsCachedRecord>(entries.Count);
+        foreach (var entry in entries.Values)
+        {
+            records.Add(new NtfsCachedRecord(
+                entry.RecordNumber,
+                entry.IsDirectory,
+                entry.DataSize,
+                entry.FileNameSize,
+                entry.Names.Select(static name => new NtfsCachedName(
+                    name.ParentRecordNumber,
+                    name.Name,
+                    name.NamespaceId,
+                    name.Attributes,
+                    name.LastWriteTimeUtc,
+                    name.RealSize)).ToArray()));
+        }
 
+        return new NtfsIndexCache(
+            NtfsIndexCache.CurrentSchemaVersion,
+            EnsureTrailingSeparator(driveRoot),
+            fileSystem,
+            volumeSerialNumber,
+            journal.UsnJournalId,
+            journal.NextUsn,
+            journal.LowestValidUsn,
+            DateTime.UtcNow,
+            records.ToArray());
+    }
+
+    private static void SaveCache(NtfsIndexCache cache, IProgress<SnapshotProgress>? progress)
+    {
+        try
+        {
             new NtfsIndexCacheStore().Save(cache);
         }
         catch (Exception ex) when (IsExpectedFastIndexFailure(ex))
