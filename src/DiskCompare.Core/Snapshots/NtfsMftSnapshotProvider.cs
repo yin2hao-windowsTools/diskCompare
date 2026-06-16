@@ -585,7 +585,7 @@ internal sealed class NtfsMftSnapshotProvider
             _ = ResolveDirectoryPath(directoryRecordNumber, entries, directoryPathCache, visiting);
         }
 
-        foreach (var (directoryRecordNumber, path) in directoryPathCache.ToArray())
+        foreach (var (directoryRecordNumber, path) in directoryPathCache)
         {
             if (directoryRecordNumber == RootDirectoryRecordNumber || string.IsNullOrEmpty(path))
             {
@@ -711,18 +711,25 @@ internal sealed class NtfsMftSnapshotProvider
         var records = new List<NtfsCachedRecord>(entries.Count);
         foreach (var entry in entries.Values)
         {
-            records.Add(new NtfsCachedRecord(
-                entry.RecordNumber,
-                entry.IsDirectory,
-                entry.DataSize,
-                entry.FileNameSize,
-                entry.Names.Select(static name => new NtfsCachedName(
+            var names = new NtfsCachedName[entry.Names.Count];
+            for (var index = 0; index < names.Length; index++)
+            {
+                var name = entry.Names[index];
+                names[index] = new NtfsCachedName(
                     name.ParentRecordNumber,
                     name.Name,
                     name.NamespaceId,
                     name.Attributes,
                     name.LastWriteTimeUtc,
-                    name.RealSize)).ToArray()));
+                    name.RealSize);
+            }
+
+            records.Add(new NtfsCachedRecord(
+                entry.RecordNumber,
+                entry.IsDirectory,
+                entry.DataSize,
+                entry.FileNameSize,
+                names));
         }
 
         return new NtfsIndexCache(
