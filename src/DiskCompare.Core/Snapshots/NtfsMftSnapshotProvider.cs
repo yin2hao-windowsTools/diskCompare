@@ -486,8 +486,7 @@ internal sealed class NtfsMftSnapshotProvider
 
     private static IndexedSnapshot BuildIndexedSnapshot(Dictionary<long, NtfsRecordEntry> entries)
     {
-        var directDirectorySizes = new Dictionary<long, long>();
-        var directDirectoryFileCounts = new Dictionary<long, int>();
+        var directDirectoryAggregates = new Dictionary<long, DirectoryAggregate>();
         var directoryChildren = new Dictionary<long, List<long>>();
         var directoryPathCache = new Dictionary<long, string?> { [RootDirectoryRecordNumber] = string.Empty };
 
@@ -527,23 +526,29 @@ internal sealed class NtfsMftSnapshotProvider
                     continue;
                 }
 
-                directDirectorySizes[name.ParentRecordNumber] = directDirectorySizes.GetValueOrDefault(name.ParentRecordNumber) + entry.Size;
-                directDirectoryFileCounts[name.ParentRecordNumber] = directDirectoryFileCounts.GetValueOrDefault(name.ParentRecordNumber) + 1;
+                if (!directDirectoryAggregates.TryGetValue(name.ParentRecordNumber, out var aggregate))
+                {
+                    aggregate = new DirectoryAggregate();
+                    directDirectoryAggregates[name.ParentRecordNumber] = aggregate;
+                }
+
+                aggregate.Size += entry.Size;
+                aggregate.FileCount++;
             }
         }
 
-        var folderSizes = BuildFolderSizes(entries, directDirectorySizes, directoryChildren, directoryPathCache);
+        var folderSizes = BuildFolderSizes(entries, directDirectoryAggregates, directoryChildren, directoryPathCache);
         long totalBytes = 0;
         var fileCount = 0;
-        foreach (var (directoryRecordNumber, size) in directDirectorySizes)
+        foreach (var (directoryRecordNumber, aggregate) in directDirectoryAggregates)
         {
             if (!IsReachableDirectory(directoryRecordNumber, directoryPathCache))
             {
                 continue;
             }
 
-            totalBytes += size;
-            fileCount += directDirectoryFileCounts.GetValueOrDefault(directoryRecordNumber);
+            totalBytes += aggregate.Size;
+            fileCount += aggregate.FileCount;
         }
 
         return new IndexedSnapshot(ToFolderEntries(folderSizes), totalBytes, fileCount);
@@ -556,7 +561,7 @@ internal sealed class NtfsMftSnapshotProvider
 
     private static Dictionary<string, FolderSizeEntryBuilder> BuildFolderSizes(
         Dictionary<long, NtfsRecordEntry> entries,
-        Dictionary<long, long> directDirectorySizes,
+        Dictionary<long, DirectoryAggregate> directDirectoryAggregates,
         Dictionary<long, List<long>> directoryChildren,
         Dictionary<long, string?> directoryPathCache)
     {
@@ -564,7 +569,7 @@ internal sealed class NtfsMftSnapshotProvider
         var subtreeSizeCache = new Dictionary<long, long>();
         var visiting = new HashSet<long>();
 
-        foreach (var directoryRecordNumber in directDirectorySizes.Keys)
+        foreach (var directoryRecordNumber in directDirectoryAggregates.Keys)
         {
             if (directoryRecordNumber == RootDirectoryRecordNumber || directoryPathCache.ContainsKey(directoryRecordNumber))
             {
@@ -592,7 +597,7 @@ internal sealed class NtfsMftSnapshotProvider
                 continue;
             }
 
-            var size = GetSubtreeSize(directoryRecordNumber, directDirectorySizes, directoryChildren, subtreeSizeCache, visiting);
+            var size = GetSubtreeSize(directoryRecordNumber, directDirectoryAggregates, directoryChildren, subtreeSizeCache, visiting);
             if (size > 0)
             {
                 folderSizes[path] = new FolderSizeEntryBuilder(path, GetName(path)) { Size = size };
@@ -604,7 +609,7 @@ internal sealed class NtfsMftSnapshotProvider
 
     private static long GetSubtreeSize(
         long directoryRecordNumber,
-        Dictionary<long, long> directDirectorySizes,
+        Dictionary<long, DirectoryAggregate> directDirectoryAggregates,
         Dictionary<long, List<long>> directoryChildren,
         Dictionary<long, long> cache,
         HashSet<long> visiting)
@@ -619,12 +624,14 @@ internal sealed class NtfsMftSnapshotProvider
             return 0;
         }
 
-        var size = directDirectorySizes.GetValueOrDefault(directoryRecordNumber);
+        var size = directDirectoryAggregates.TryGetValue(directoryRecordNumber, out var aggregate)
+            ? aggregate.Size
+            : 0;
         if (directoryChildren.TryGetValue(directoryRecordNumber, out var children))
         {
             foreach (var child in children)
             {
-                size += GetSubtreeSize(child, directDirectorySizes, directoryChildren, cache, visiting);
+                size += GetSubtreeSize(child, directDirectoryAggregates, directoryChildren, cache, visiting);
             }
         }
 
@@ -1204,6 +1211,13 @@ internal sealed class NtfsMftSnapshotProvider
         IReadOnlyList<FolderSizeEntry> Folders,
         long TotalBytes,
         int FileCount);
+
+    private sealed class DirectoryAggregate
+    {
+        public long Size { get; set; }
+
+        public int FileCount { get; set; }
+    }
 
     private sealed class FolderSizeEntryBuilder(string relativePath, string name)
     {
