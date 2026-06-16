@@ -48,6 +48,21 @@ internal sealed class NtfsMftSnapshotProvider
         }
     }
 
+    internal static Snapshot CreateSnapshotFromIndexCache(NtfsIndexCache cache)
+    {
+        var indexedSnapshot = BuildIndexedSnapshot(ToEntries(cache));
+        return new Snapshot(
+            EnsureTrailingSeparator(cache.DriveRoot),
+            string.Empty,
+            cache.FileSystem,
+            cache.UpdatedAtUtc,
+            [],
+            [],
+            indexedSnapshot.Folders,
+            indexedSnapshot.TotalBytes,
+            indexedSnapshot.FileCount);
+    }
+
     private static Snapshot Create(
         string driveRoot,
         IProgress<SnapshotProgress>? progress,
@@ -114,17 +129,18 @@ internal sealed class NtfsMftSnapshotProvider
             TrySaveCache(driveRoot, format, volumeSerialNumber.Value, journal, entries, progress);
         }
 
-        progress?.Report(new SnapshotProgress("NTFS MFT 快速索引完成", indexedSnapshot.Files.Count, indexedSnapshot.TotalBytes, 0, "NTFS MFT 快速索引"));
+        progress?.Report(new SnapshotProgress("NTFS MFT 快速索引完成", indexedSnapshot.FileCount, indexedSnapshot.TotalBytes, 0, "NTFS MFT 快速索引"));
 
         return new Snapshot(
             EnsureTrailingSeparator(driveRoot),
             SafeGet(() => drive.VolumeLabel),
             format,
             DateTime.UtcNow,
-            indexedSnapshot.Files,
+            [],
             [],
             indexedSnapshot.Folders,
-            indexedSnapshot.TotalBytes);
+            indexedSnapshot.TotalBytes,
+            indexedSnapshot.FileCount);
     }
 
     private static Snapshot? TryCreateFromUsnCache(
@@ -173,17 +189,18 @@ internal sealed class NtfsMftSnapshotProvider
 
             var indexedSnapshot = BuildIndexedSnapshot(entries);
             TrySaveCache(driveRoot, fileSystem, volumeSerialNumber, journal, entries, progress);
-            progress?.Report(new SnapshotProgress("NTFS USN 增量索引完成", indexedSnapshot.Files.Count, indexedSnapshot.TotalBytes, 0, "NTFS USN 增量索引"));
+            progress?.Report(new SnapshotProgress("NTFS USN 增量索引完成", indexedSnapshot.FileCount, indexedSnapshot.TotalBytes, 0, "NTFS USN 增量索引"));
 
             return new Snapshot(
                 EnsureTrailingSeparator(driveRoot),
                 SafeGet(() => new DriveInfo(driveRoot).VolumeLabel),
                 fileSystem,
                 DateTime.UtcNow,
-                indexedSnapshot.Files,
+                [],
                 [],
                 indexedSnapshot.Folders,
-                indexedSnapshot.TotalBytes);
+                indexedSnapshot.TotalBytes,
+                indexedSnapshot.FileCount);
         }
         catch (OperationCanceledException)
         {
@@ -458,11 +475,34 @@ internal sealed class NtfsMftSnapshotProvider
 
     private static IndexedSnapshot BuildIndexedSnapshot(Dictionary<long, NtfsRecordEntry> entries)
     {
-        var files = new List<FileEntry>(entries.Count);
-        var folderSizes = new Dictionary<string, FolderSizeEntryBuilder>(StringComparer.OrdinalIgnoreCase);
+        var directDirectorySizes = new Dictionary<long, long>();
+        var directoryChildren = new Dictionary<long, List<long>>();
         var directoryPathCache = new Dictionary<long, string?> { [RootDirectoryRecordNumber] = string.Empty };
         var visiting = new HashSet<long>();
         long totalBytes = 0;
+        var fileCount = 0;
+
+        foreach (var entry in entries.Values)
+        {
+            if (!entry.IsDirectory)
+            {
+                continue;
+            }
+
+            var parentRecordNumber = entry.GetPreferredVisibleName()?.ParentRecordNumber;
+            if (parentRecordNumber is null || parentRecordNumber.Value == entry.RecordNumber)
+            {
+                continue;
+            }
+
+            if (!directoryChildren.TryGetValue(parentRecordNumber.Value, out var children))
+            {
+                children = [];
+                directoryChildren[parentRecordNumber.Value] = children;
+            }
+
+            children.Add(entry.RecordNumber);
+        }
 
         foreach (var entry in entries.Values)
         {
@@ -479,67 +519,115 @@ internal sealed class NtfsMftSnapshotProvider
                 }
 
                 visiting.Clear();
-                var parentPath = ResolveDirectoryPath(name.ParentRecordNumber, entries, directoryPathCache, visiting);
-                if (parentPath is null)
+                if (ResolveDirectoryPath(name.ParentRecordNumber, entries, directoryPathCache, visiting) is null)
                 {
                     continue;
                 }
 
-                var relativePath = string.IsNullOrEmpty(parentPath)
-                    ? name.Name
-                    : string.Concat(parentPath, Path.DirectorySeparatorChar, name.Name);
-
-                files.Add(new FileEntry(relativePath, entry.Size, name.LastWriteTimeUtc));
+                directDirectorySizes[name.ParentRecordNumber] = directDirectorySizes.GetValueOrDefault(name.ParentRecordNumber) + entry.Size;
                 totalBytes += entry.Size;
-                AddFolderSizes(folderSizes, parentPath, entry.Size);
+                fileCount++;
             }
         }
 
+        var folderSizes = BuildFolderSizes(entries, directDirectorySizes, directoryChildren, directoryPathCache);
         var folders = folderSizes.Count == 0
             ? []
             : folderSizes.Values
                 .Select(static folder => new FolderSizeEntry(folder.RelativePath, folder.Name, folder.Size))
                 .ToArray();
 
-        return new IndexedSnapshot(files, folders, totalBytes);
+        return new IndexedSnapshot(folders, totalBytes, fileCount);
     }
 
-    private static void AddFolderSizes(Dictionary<string, FolderSizeEntryBuilder> folderSizes, string parentPath, long size)
+    private static Dictionary<string, FolderSizeEntryBuilder> BuildFolderSizes(
+        Dictionary<long, NtfsRecordEntry> entries,
+        Dictionary<long, long> directDirectorySizes,
+        Dictionary<long, List<long>> directoryChildren,
+        Dictionary<long, string?> directoryPathCache)
     {
-        if (string.IsNullOrEmpty(parentPath))
-        {
-            return;
-        }
+        var folderSizes = new Dictionary<string, FolderSizeEntryBuilder>(StringComparer.OrdinalIgnoreCase);
+        var subtreeSizeCache = new Dictionary<long, long>();
+        var visiting = new HashSet<long>();
 
-        for (var separatorIndex = parentPath.Length; separatorIndex > 0;)
+        foreach (var directoryRecordNumber in directoryPathCache.Keys.ToArray())
         {
-            var path = parentPath[..separatorIndex];
-            AddFolderSize(folderSizes, path, size);
-            var previousSeparator = path.LastIndexOf(Path.DirectorySeparatorChar);
-            if (previousSeparator < 0)
+            if (directoryRecordNumber == RootDirectoryRecordNumber)
             {
-                break;
+                continue;
             }
 
-            separatorIndex = previousSeparator;
-        }
-    }
+            var path = directoryPathCache[directoryRecordNumber];
+            if (string.IsNullOrEmpty(path))
+            {
+                continue;
+            }
 
-    private static void AddFolderSize(Dictionary<string, FolderSizeEntryBuilder> folderSizes, string relativePath, long size)
-    {
-        if (!folderSizes.TryGetValue(relativePath, out var folder))
+            var size = GetSubtreeSize(directoryRecordNumber, directDirectorySizes, directoryChildren, subtreeSizeCache, visiting);
+            if (size > 0)
+            {
+                folderSizes[path] = new FolderSizeEntryBuilder(path, GetName(path)) { Size = size };
+            }
+        }
+
+        foreach (var directoryRecordNumber in directDirectorySizes.Keys)
         {
-            folder = new FolderSizeEntryBuilder(relativePath, GetName(relativePath));
-            folderSizes[relativePath] = folder;
+            if (directoryRecordNumber == RootDirectoryRecordNumber || directoryPathCache.ContainsKey(directoryRecordNumber))
+            {
+                continue;
+            }
+
+            if (!entries.TryGetValue(directoryRecordNumber, out var entry) || !entry.IsDirectory)
+            {
+                continue;
+            }
+
+            visiting.Clear();
+            var path = ResolveDirectoryPath(directoryRecordNumber, entries, directoryPathCache, visiting);
+            if (string.IsNullOrEmpty(path))
+            {
+                continue;
+            }
+
+            var size = GetSubtreeSize(directoryRecordNumber, directDirectorySizes, directoryChildren, subtreeSizeCache, visiting);
+            if (size > 0)
+            {
+                folderSizes[path] = new FolderSizeEntryBuilder(path, GetName(path)) { Size = size };
+            }
         }
 
-        folder.Size += size;
+        return folderSizes;
     }
 
-    private static string GetName(string relativePath)
+    private static long GetSubtreeSize(
+        long directoryRecordNumber,
+        Dictionary<long, long> directDirectorySizes,
+        Dictionary<long, List<long>> directoryChildren,
+        Dictionary<long, long> cache,
+        HashSet<long> visiting)
     {
-        var separator = relativePath.LastIndexOf(Path.DirectorySeparatorChar);
-        return separator < 0 ? relativePath : relativePath[(separator + 1)..];
+        if (cache.TryGetValue(directoryRecordNumber, out var cached))
+        {
+            return cached;
+        }
+
+        if (!visiting.Add(directoryRecordNumber))
+        {
+            return 0;
+        }
+
+        var size = directDirectorySizes.GetValueOrDefault(directoryRecordNumber);
+        if (directoryChildren.TryGetValue(directoryRecordNumber, out var children))
+        {
+            foreach (var child in children)
+            {
+                size += GetSubtreeSize(child, directDirectorySizes, directoryChildren, cache, visiting);
+            }
+        }
+
+        visiting.Remove(directoryRecordNumber);
+        cache[directoryRecordNumber] = size;
+        return size;
     }
 
     private static bool IsUsnCacheUsable(
@@ -672,6 +760,12 @@ internal sealed class NtfsMftSnapshotProvider
         cache[recordNumber] = path;
         visiting.Remove(recordNumber);
         return path;
+    }
+
+    private static string GetName(string relativePath)
+    {
+        var separator = relativePath.LastIndexOf(Path.DirectorySeparatorChar);
+        return separator < 0 ? relativePath : relativePath[(separator + 1)..];
     }
 
     private static ReadOnlySpan<byte> GetResidentValue(Span<byte> attribute, int attributeLength)
@@ -1064,9 +1158,9 @@ internal sealed class NtfsMftSnapshotProvider
         long LowestValidUsn);
 
     private sealed record IndexedSnapshot(
-        IReadOnlyList<FileEntry> Files,
         IReadOnlyList<FolderSizeEntry> Folders,
-        long TotalBytes);
+        long TotalBytes,
+        int FileCount);
 
     private sealed class FolderSizeEntryBuilder(string relativePath, string name)
     {

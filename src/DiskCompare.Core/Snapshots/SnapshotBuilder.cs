@@ -57,7 +57,6 @@ public sealed class SnapshotBuilder
         CancellationToken cancellationToken)
     {
         var root = EnsureTrailingSeparator(driveRoot);
-        var files = new List<FileEntry>(capacity: 64 * 1024);
         var folderSizes = new Dictionary<string, FolderSizeEntryBuilder>(StringComparer.OrdinalIgnoreCase);
         var errors = new ConcurrentQueue<ScanError>();
         var stack = new Stack<string>();
@@ -91,7 +90,6 @@ public sealed class SnapshotBuilder
 
                     var relativePath = Path.GetRelativePath(root, info.FullName);
                     var normalizedRelativePath = NormalizeRelativePath(relativePath);
-                    files.Add(new FileEntry(normalizedRelativePath, info.Length, info.LastWriteTimeUtc));
                     AddFolderSizes(folderSizes, normalizedRelativePath, info.Length);
                     filesScanned++;
                     bytesScanned += info.Length;
@@ -116,12 +114,13 @@ public sealed class SnapshotBuilder
             SafeGet(() => drive.VolumeLabel),
             SafeGet(() => drive.DriveFormat),
             DateTime.UtcNow,
-            files.OrderBy(static file => file.RelativePath, StringComparer.OrdinalIgnoreCase).ToArray(),
+            [],
             errors.ToArray(),
             folderSizes.Values
                 .Select(static folder => new FolderSizeEntry(folder.RelativePath, folder.Name, folder.Size))
                 .ToArray(),
-            bytesScanned);
+            bytesScanned,
+            filesScanned);
     }
 
     private static IEnumerable<string> EnumerateDirectories(string path, ConcurrentQueue<ScanError> errors)
