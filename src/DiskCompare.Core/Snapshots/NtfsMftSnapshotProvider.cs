@@ -184,10 +184,11 @@ internal sealed class NtfsMftSnapshotProvider
                 progress,
                 cancellationToken);
 
+            var recordBuffer = new byte[boot.FileRecordSize];
             foreach (var changedRecordNumber in changedRecordNumbers)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                var entry = TryReadRecord(stream, boot, mftMap, recordCount, changedRecordNumber);
+                var entry = TryReadRecord(stream, boot, mftMap, recordCount, changedRecordNumber, recordBuffer);
                 if (entry is null)
                 {
                     entries.Remove(changedRecordNumber);
@@ -447,7 +448,8 @@ internal sealed class NtfsMftSnapshotProvider
         NtfsBootSector boot,
         MftDataMap mftMap,
         long recordCount,
-        long recordNumber)
+        long recordNumber,
+        byte[] buffer)
     {
         if (recordNumber < 0 || recordNumber >= recordCount)
         {
@@ -474,7 +476,6 @@ internal sealed class NtfsMftSnapshotProvider
                 return null;
             }
 
-            var buffer = new byte[boot.FileRecordSize];
             var diskOffset = (run.LogicalClusterNumber * boot.BytesPerCluster) + (remainingRecordOffset * boot.FileRecordSize);
             ReadExactlyAt(stream, buffer, diskOffset);
             return TryParseRecord(buffer, recordNumber, boot.BytesPerSector);
