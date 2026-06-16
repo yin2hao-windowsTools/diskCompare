@@ -198,26 +198,51 @@ internal sealed class NtfsIndexCacheStore
 
     private IEnumerable<CacheCandidate> EnumerateCacheCandidates(string driveRoot, uint volumeSerialNumber)
     {
-        return EnumerateCachePaths(driveRoot, volumeSerialNumber)
-            .Select(static path => new FileInfo(path))
-            .Where(static info => !info.Attributes.HasFlag(FileAttributes.ReparsePoint))
-            .Select(static info => new CacheCandidate(info.FullName, TryParseNextUsnFromCacheName(info.Name), info.Length))
-            .OrderByDescending(static candidate => candidate.NextUsn)
-            .ThenByDescending(static candidate => candidate.Path, StringComparer.OrdinalIgnoreCase);
+        var candidates = new List<CacheCandidate>();
+        foreach (var path in EnumerateCachePaths(driveRoot, volumeSerialNumber))
+        {
+            var info = new FileInfo(path);
+            if (info.Attributes.HasFlag(FileAttributes.ReparsePoint))
+            {
+                continue;
+            }
+
+            candidates.Add(new CacheCandidate(info.FullName, TryParseNextUsnFromCacheName(info.Name), info.Length));
+        }
+
+        candidates.Sort(static (left, right) =>
+        {
+            var usnCompare = right.NextUsn.CompareTo(left.NextUsn);
+            return usnCompare != 0
+                ? usnCompare
+                : string.Compare(right.Path, left.Path, StringComparison.OrdinalIgnoreCase);
+        });
+        return candidates;
     }
 
     private void PruneOldCaches(string driveRoot, uint volumeSerialNumber)
     {
-        var cachePaths = EnumerateCachePaths(driveRoot, volumeSerialNumber)
-            .Select(path => new FileInfo(path))
-            .Where(static info => !info.Attributes.HasFlag(FileAttributes.ReparsePoint))
-            .OrderByDescending(static info => info.CreationTimeUtc)
-            .ThenByDescending(static info => info.Name, StringComparer.OrdinalIgnoreCase)
-            .Skip(MaxCachesPerVolume)
-            .ToArray();
-
-        foreach (var cache in cachePaths)
+        var cachePaths = new List<FileInfo>();
+        foreach (var path in EnumerateCachePaths(driveRoot, volumeSerialNumber))
         {
+            var info = new FileInfo(path);
+            if (!info.Attributes.HasFlag(FileAttributes.ReparsePoint))
+            {
+                cachePaths.Add(info);
+            }
+        }
+
+        cachePaths.Sort(static (left, right) =>
+        {
+            var createdCompare = right.CreationTimeUtc.CompareTo(left.CreationTimeUtc);
+            return createdCompare != 0
+                ? createdCompare
+                : string.Compare(right.Name, left.Name, StringComparison.OrdinalIgnoreCase);
+        });
+
+        for (var index = MaxCachesPerVolume; index < cachePaths.Count; index++)
+        {
+            var cache = cachePaths[index];
             var fullPath = Path.GetFullPath(cache.FullName);
             var directory = NormalizeDirectory(Path.GetDirectoryName(fullPath));
             if (!string.Equals(directory, _cacheDirectory, StringComparison.OrdinalIgnoreCase))
