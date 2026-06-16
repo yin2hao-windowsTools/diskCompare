@@ -1265,48 +1265,40 @@ internal sealed class NtfsMftSnapshotProvider
         while (input.StartUsn < targetUsn)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var inputHandle = GCHandle.Alloc(input, GCHandleType.Pinned);
-            try
+            if (!NativeMethods.DeviceIoControl(
+                handle,
+                NativeMethods.FsctlReadUsnJournal,
+                ref input,
+                inputSize,
+                buffer,
+                buffer.Length,
+                out var bytesReturned,
+                IntPtr.Zero))
             {
-                if (!NativeMethods.DeviceIoControl(
-                    handle,
-                    NativeMethods.FsctlReadUsnJournal,
-                    inputHandle.AddrOfPinnedObject(),
-                    inputSize,
-                    buffer,
-                    buffer.Length,
-                    out var bytesReturned,
-                    IntPtr.Zero))
-                {
-                    throw new Win32Exception(Marshal.GetLastWin32Error(), "Unable to read NTFS USN journal.");
-                }
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "Unable to read NTFS USN journal.");
+            }
 
-                if (bytesReturned <= sizeof(long))
+            if (bytesReturned <= sizeof(long))
+            {
+                break;
+            }
+
+            input.StartUsn = BinaryPrimitives.ReadInt64LittleEndian(buffer.AsSpan(0, 8));
+            var offset = sizeof(long);
+            while (offset + 8 <= bytesReturned)
+            {
+                var recordLength = BinaryPrimitives.ReadUInt32LittleEndian(buffer.AsSpan(offset, 4));
+                if (recordLength < 60 || offset + recordLength > bytesReturned)
                 {
                     break;
                 }
 
-                input.StartUsn = BinaryPrimitives.ReadInt64LittleEndian(buffer.AsSpan(0, 8));
-                var offset = sizeof(long);
-                while (offset + 8 <= bytesReturned)
-                {
-                    var recordLength = BinaryPrimitives.ReadUInt32LittleEndian(buffer.AsSpan(offset, 4));
-                    if (recordLength < 60 || offset + recordLength > bytesReturned)
-                    {
-                        break;
-                    }
-
-                    var record = buffer.AsSpan(offset, (int)recordLength);
-                    AddChangedRecordNumbers(record, changedRecordNumbers);
-                    offset += (int)recordLength;
-                }
-
-                progress?.Report(new SnapshotProgress($"正在读取 NTFS USN 增量 {input.StartUsn:N0}/{targetUsn:N0}", changedRecordNumbers.Count, 0, 0, "NTFS USN 增量索引"));
+                var record = buffer.AsSpan(offset, (int)recordLength);
+                AddChangedRecordNumbers(record, changedRecordNumbers);
+                offset += (int)recordLength;
             }
-            finally
-            {
-                inputHandle.Free();
-            }
+
+            progress?.Report(new SnapshotProgress($"正在读取 NTFS USN 增量 {input.StartUsn:N0}/{targetUsn:N0}", changedRecordNumbers.Count, 0, 0, "NTFS USN 增量索引"));
         }
 
         return changedRecordNumbers;
@@ -1619,6 +1611,18 @@ internal sealed class NtfsMftSnapshotProvider
             IntPtr inBuffer,
             int inBufferSize,
             ref byte outBuffer,
+            int outBufferSize,
+            out int bytesReturned,
+            IntPtr overlapped);
+
+        [DllImport("kernel32.dll", EntryPoint = "DeviceIoControl", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        public static extern bool DeviceIoControl(
+            SafeFileHandle device,
+            uint ioControlCode,
+            ref ReadUsnJournalData inBuffer,
+            int inBufferSize,
+            byte[] outBuffer,
             int outBufferSize,
             out int bytesReturned,
             IntPtr overlapped);
